@@ -43,8 +43,27 @@ make fmt         # ruff format src tests scripts
 make test        # pytest -q（注意：tests/ 为空，当前以 exit code 5「no tests ran」结束，非故障）
 make test-full   # pytest -q -m slow -v，parity 测试，会下载 GPT-2 权重
 make check       # lint + test
-make demo        # tiny 配置训练 + 生成
+make demo        # tiny 配置训练 + 生成（⚠️ 见下方警告，当前跑不通）
 make clean       # 清缓存
+```
+
+> ⚠️ **`make demo` / `scripts/*.py` 目前无法端到端跑通**：它们依赖的三个模块仍是存根
+> （`train/trainer.py`、`data/dataloader.py`、`generate/sampling.py`）。
+> 实测 `python scripts/train.py --config configs/gpt2-tiny.yaml` 抛 `NotImplementedError`（`train/trainer.py:147`）。
+> 另外 `scripts/train.py:55`（`optimizer=None`）与 `scripts/generate.py:54`（`idx=None`）是标了 `TODO` 的占位实参，
+> 靠 `# type: ignore` 过 mypy，不是已接通的逻辑。
+> 当前唯一可运行的端到端路径是模型前向：
+> `GPTModel(GPTConfig.gpt2_tiny())(torch.zeros(2, 16, dtype=torch.long))` → `[2, 16, 50257]`。
+
+单个文件 / 单个用例（`tests/` 待补，先把命令备齐）：
+
+```bash
+pytest tests/test_model.py -v                     # 单文件
+pytest tests/test_model.py::test_weight_tying -v  # 单用例
+pytest tests/test_x.py -k "tie or mask" -v        # 按名字筛
+pytest -m slow tests/test_parity.py -v            # 跑 parity；命令行 -m 覆盖 addopts 里的 'not slow'
+mypy src/my_llm/model/gpt.py                      # 单文件类型检查
+ruff check src/my_llm/model                       # 局部 lint（不影响全局）
 ```
 
 补充约定：
@@ -53,6 +72,34 @@ make clean       # 清缓存
   `--config` 等路径是相对根目录的（如 `configs/gpt2-tiny.yaml`）。
 - `pyproject.toml` 里 `[tool.hatch.build.targets.wheel] packages = ["src/my_llm"]` 是必需的：
   hatchling 按项目名推断的是 `src/my_llm_from_scratch/`，删掉会让 `pip install -e .` 失败。
+- **深路径导入**：`src/my_llm/__init__.py` 只暴露 `__version__`（`:25`），不重导出任何子模块。
+  一律写 `from my_llm.model.gpt import GPTModel`，不要指望 `from my_llm import GPTModel`。
+
+## CI 与容器
+
+`.github/workflows/ci.yml` 有两个 job，本地复现时注意差异：
+
+| job | 触发 | Python | 步骤 |
+|---|---|---|---|
+| `test` | push / PR | 3.10 / 3.11 / 3.12 矩阵 | `ruff check src tests scripts` → `mypy src` → `pytest --cov=my_llm --cov-report=xml` |
+| `parity` | **仅 push 到 main** | 3.11 | `pytest -m slow -v`，通过 job env 注入 `HF_ENDPOINT=https://hf-mirror.com` |
+
+要在本地复刻 CI：用 `pip install -e ".[dev]"`（**不带** `viz`，CI 不装 seaborn）。
+另有 `Dockerfile`（`python:3.11-slim`，`HF_ENDPOINT` 已写进镜像 ENV，CMD 为 `scripts/generate.py`）——
+它同样会命中上面的存根，现阶段只能用来验证安装与 import。
+
+## 文档地图
+
+| 文件 | 看什么 |
+|---|---|
+| `README.md` | 第一屏 parity diff 表（v1 行为 vs HF vs v2 状态，含证据列）、项目结构、已知状态 |
+| `CONTRIBUTING.md` | 6 条硬规则 + 搬运 v1 代码的规矩 + PR 要求 |
+| `docs/00-现状盘点.md` | v1 全量审计，所有 `路径:行号` 证据的唯一出处 |
+| `CHANGELOG.md` | 版本演进记录 |
+
+`CONTRIBUTING.md` 里有本文件未重复收录、但同样必须遵守的几条：`src/` 必须通过
+`mypy --strict`（`tests/` 可无注解）、输出统一落到 `outputs/` 且不用 CWD 相对路径、
+改动 `model/` 必须同步 parity 测试、禁止 `git commit --no-verify`。
 
 ## Architecture
 
@@ -79,9 +126,11 @@ make clean       # 清缓存
 
 - **中文优先**：注释、docstring、日志与参数帮助文字均用中文，标识符用 ASCII。与既有代码保持一致。
 - **配置只能来自 yaml**：超参进 `GPTConfig` 或 `configs/*.yaml`，不要写进 `__main__`（硬约束 4）。
-- **ruff 版本分歧**：本地 ruff 0.16.9，pre-commit 里锁的是 v0.6.9，两者对多行 `assert` 的换行风格结论相反，
-  会互相改写文件（已踩过一次，导致提交反复失败）。规避办法：断言消息先赋变量、写成单行；
-  **不要**去改 hook 的 `rev`（GitHub 不可达，改了装不上）。
+- **ruff 版本分歧**：本地 ruff 0.16.9，pre-commit 里锁的是 v0.6.9（`.pre-commit-config.yaml:3`），
+  两者对多行 `assert` 的换行风格结论相反，会互相改写文件（已踩过一次，导致提交反复失败）。
+  规避办法：断言消息先赋变量、写成单行；**不要**去改 hook 的 `rev`（GitHub 不可达，改了装不上）。
+- **mypy 同样有版本分歧**：本地 mypy 2.3.1，pre-commit 锁的是 v1.11.2（`.pre-commit-config.yaml:9`）。
+  结论冲突时以 **hook（v1.11.2）为准**，同样不要改 `rev`。
 - **pre-commit 的 mypy 跑在隔离环境**：`additional_dependencies` 必须显式列出 `torch, numpy, types-PyYAML`，
   否则 `config.py` 的 `import yaml` 会报 `import-untyped`（本地能过是因为本地装了 pyyaml 本体）。
 - **产物不要入库**：`.gitignore` 已覆盖 `*.pt *.pth *.ckpt *.safetensors`、`gpt2/ models/ checkpoints/`、
