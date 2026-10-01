@@ -6,30 +6,36 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 `v2-work/` 是 v2 重写的工作区；`../v1-reference/`（my-LLM-from-scratch，tochikoma777）是**只读参考**（见下方硬约束 3）。
 
-截至 2026-10-01：仓库有 1 次提交 `398964d feat(R2): project scaffold with model core migrated from v1`，
-共 50 个被跟踪文件。已落地的是「工程地基 + 模型内核 + 配置层」，其余模块是**类型完整的存根**。
+截至 2026-10-01：HEAD 为 `4419b00 docs(R3a)`（共 4 次提交，57 个被跟踪文件，工作区干净）。
+已落地的是「工程地基 + 模型内核 + 配置层 + 快测套件」，其余模块是**类型完整的存根**。
 
 **已实现**（可运行）：
 - `src/my_llm/config.py` — `GPTConfig` dataclass，唯一配置来源；`from_yaml` / `gpt2_small()` / `gpt2_tiny()`
 - `src/my_llm/model/` — `norm.py`（LayerNorm + NewGELU）、`attention.py`（MultiHeadAttention）、
   `block.py`（FeedForward + TransformerBlock）、`gpt.py`（GPTModel，含 weight tying）
-- `src/my_llm/tokenizer/` — `protocol.py`（Tokenizer 协议）、`tiktoken_impl.py`（tiktoken 实现）
+- `src/my_llm/tokenizer/` — `protocol.py`（Tokenizer 协议）、`tiktoken_impl.py`（`TiktokenTokenizer` +
+  工厂 `build_tokenizer(name="gpt2")`）
 
 **存根**（函数体 `raise NotImplementedError`，共 14 个文件）：
 `data/dataset.py`、`data/dataloader.py`、`finetune/sft.py`、`generate/sampling.py`、`generate/kv_cache.py`、
 `train/losses.py`、`train/metrics.py`、`train/scheduler.py`、`train/trainer.py`、`utils/seed.py`、
 `utils/logging.py`、`utils/viz.py`、`weights/hf.py`、`weights/openai_tf.py`
 
-`tests/` 目录存在但**为空**（测试待补），`notebooks/` 只有 `.gitkeep`。
+`tests/` 已有快测套件：`conftest.py` + `test_norm.py` / `test_tying.py` / `test_attention.py` /
+`test_tokenizer.py`，共 15 个用例，`pytest -q` 全绿（0.8s）。**尚无 `slow`（parity）用例**——
+`pytest -m slow` 目前是「15 deselected」，不是故障。`notebooks/` 只有 `.gitkeep`。
+`configs/` 有 5 份 yaml：`gpt2-small.yaml` / `gpt2-tiny.yaml` / `gpt2-medium.yaml`（架构），
+以及 `sft-alpaca.yaml` / `sft-medium-bf16.yaml`（**嵌套**运行配置，见 Commands 里的坑）。
 `docs/00-现状盘点.md` 是 v1 的完整审计报告（含行号证据、权重映射表、与 HF 的架构差异、取舍建议），
 动手前优先读它，不要凭记忆重写结论。
 
 ## Environment
 
-- Python 3.11.15 / torch 2.12.0+cu130。**本机有 GPU**（RTX 5060 Laptop，8GB），
-  但 parity 测试强制 CPU + fp32（硬约束 2），不要因为看到 CUDA 可用就改用 GPU。
-- `transformers` 已装（仅 parity 用）；`tensorflow` **未装**——它只是 `weights/openai_tf.py` 的可选依赖，
-  不要把它加回主依赖。
+- Python 3.11.15 / torch 2.12.0+cu130 / transformers 5.12.0（本机实测）。**本机有 GPU**
+  （RTX 5060 Laptop，8GB），但 parity 测试强制 CPU + fp32（硬约束 2），不要因为看到 CUDA 可用就改用 GPU。
+- `transformers` 已装（仅 parity 用），pyproject 里锁 `>=5.12,<6`：parity 断言依赖 `GPTConfig()` 默认值与
+  `NewGELUActivation` 实现，6.x 一改整套 parity 失效，不要放宽上界。
+- `tensorflow` **未装**——它只是 `weights/openai_tf.py` 的可选依赖，不要把它加回主依赖。
 - 网络：PyPI 走 tuna 镜像可通；**github.com 不可达**。因此
   - `pre-commit` 无法拉取新的 hook 版本（`rev` 改不动，改了会卡死在初始化）；
   - parity 测试下载 HF 权重依赖 `Makefile` 里的 `HF_ENDPOINT=https://hf-mirror.com`，不要删掉。
@@ -40,8 +46,9 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 make install     # pip install -e ".[dev,viz]" + pre-commit install
 make lint        # ruff check src tests scripts + mypy src（当前全绿）
 make fmt         # ruff format src tests scripts
-make test        # pytest -q（注意：tests/ 为空，当前以 exit code 5「no tests ran」结束，非故障）
+make test        # pytest -q，跑 15 个快测
 make test-full   # pytest -q -m slow -v，parity 测试，会下载 GPT-2 权重
+                 # （当前还没有 slow 用例，结果是「15 deselected」，非故障）
 make check       # lint + test
 make demo        # tiny 配置训练 + 生成（⚠️ 见下方警告，当前跑不通）
 make clean       # 清缓存
@@ -55,25 +62,38 @@ make clean       # 清缓存
 > 当前唯一可运行的端到端路径是模型前向：
 > `GPTModel(GPTConfig.gpt2_tiny())(torch.zeros(2, 16, dtype=torch.long))` → `[2, 16, 50257]`。
 
-单个文件 / 单个用例（`tests/` 待补，先把命令备齐）：
+单个文件 / 单个用例：
 
 ```bash
-pytest tests/test_model.py -v                     # 单文件
-pytest tests/test_model.py::test_weight_tying -v  # 单用例
-pytest tests/test_x.py -k "tie or mask" -v        # 按名字筛
-pytest -m slow tests/test_parity.py -v            # 跑 parity；命令行 -m 覆盖 addopts 里的 'not slow'
-mypy src/my_llm/model/gpt.py                      # 单文件类型检查
-ruff check src/my_llm/model                       # 局部 lint（不影响全局）
+pytest tests/test_tying.py -v                          # 单文件
+pytest tests/test_tying.py::test_head_shares_storage -v  # 单用例
+pytest tests/test_norm.py -k "gelu or norm" -v         # 按名字筛
+pytest tests/test_tokenizer.py -k "roundtrip" -v       # 参数化用例按 id 筛
+pytest -m slow -v                                      # 跑 parity；命令行 -m 覆盖 addopts 的 'not slow'
+mypy src/my_llm/model/gpt.py                           # 单文件类型检查
+ruff check src/my_llm/model                            # 局部 lint（不影响全局）
 ```
 
 补充约定：
 - pytest 默认 `addopts = "-m 'not slow'"`，即日常不跑联网测试；**任何会下载真实权重的测试必须标 `@pytest.mark.slow`**。
+- `tests/conftest.py` 提供 session 级 fixture：`tiny_cfg`（读 `configs/gpt2-tiny.yaml`）、`tiny_model`
+  （`torch.manual_seed(0)` 初始化、`eval()`、CPU+fp32）、`sample_ids`（`(2,16)` 固定 token 批次），
+  以及模块常量 `DEVICE="cpu"` / `DTYPE=torch.float32` / `REPO_ROOT`（用 `__file__` 定位，换 CWD 不崩）。
+  新测试优先复用这些 fixture，不要自己 new 一份配置。
+  （`tokenizer` fixture 是 module 级，定义在 `tests/test_tokenizer.py:15`，不在 conftest 里。）
 - 包通过 editable 安装导入（`import my_llm`）；脚本 `scripts/*.py` 从**仓库根目录**运行，
   `--config` 等路径是相对根目录的（如 `configs/gpt2-tiny.yaml`）。
 - `pyproject.toml` 里 `[tool.hatch.build.targets.wheel] packages = ["src/my_llm"]` 是必需的：
   hatchling 按项目名推断的是 `src/my_llm_from_scratch/`，删掉会让 `pip install -e .` 失败。
-- **深路径导入**：`src/my_llm/__init__.py` 只暴露 `__version__`（`:25`），不重导出任何子模块。
-  一律写 `from my_llm.model.gpt import GPTModel`，不要指望 `from my_llm import GPTModel`。
+- **yaml 有两种形态**，别喂错：`configs/gpt2-*.yaml` 是**扁平**架构配置（顶层键 = `GPTConfig` 字段），
+  可直接 `GPTConfig.from_yaml(...)`；`configs/sft-*.yaml` 是**嵌套**运行配置，顶层是
+  `model` / `data` / `train` / `generation` / `output`，其中 `model.config` 指向一份架构 yaml。
+  把 sft yaml 直接喂给 `from_yaml` 会抛 `KeyError: 缺少必填字段 [...]`（实测如此），
+  得先取 `model.config` 指向的路径再构造 `GPTConfig`。
+- **导入层级**：只有根包 `src/my_llm/__init__.py` 不重导出（仅 `__version__`，`:25`），
+  **子包都重导出了**：`from my_llm.model import GPTModel`、`from my_llm.tokenizer import build_tokenizer`
+  均可；需要某个具体类时写深路径 `from my_llm.model.gpt import GPTModel` 也对，两者都行，
+  但不要写 `from my_llm import GPTModel`（会 ImportError）。
 
 ## CI 与容器
 
@@ -107,10 +127,11 @@ ruff check src/my_llm/model                       # 局部 lint（不影响全�
 
 | 包 | 职责 | v1 来源 |
 |---|---|---|
-| `config.py` | `GPTConfig`（vocab_size / context_length / emb_dim / n_layers / n_heads / drop_rate / qkv_bias），`qkv_bias` 默认 True | v1 三处冲突的 `GPT_CONFIG_124M` |
+| `config.py` | `GPTConfig`（vocab_size / context_length / emb_dim / n_layers / n_heads / drop_rate / qkv_bias），`qkv_bias` 默认 True；`from_yaml` 只吃扁平 yaml | v1 三处冲突的 `GPT_CONFIG_124M` |
+| `configs/` | `gpt2-{small,tiny,medium}.yaml` 扁平架构配置；`sft-*.yaml` 嵌套运行配置（`model.config` 再指向架构 yaml） | v1 的 `__main__` 字面量 |
 | `model/` | 模型本体。`norm.py` / `attention.py` / `block.py` / `gpt.py` | `language_module.py` |
 | `weights/` | `openai_tf.py`（TF→PT 映射，v1 独特资产）、`hf.py`（HF 加载，parity 取数） | `module_load_param.py` |
-| `tokenizer/` | `protocol.py` + `tiktoken_impl.py`（`bpe.py` 留作 P3 可选） | 四处重复的 `tiktoken.get_encoding("gpt2")` |
+| `tokenizer/` | `protocol.py`（`Tokenizer` runtime_checkable 协议）+ `tiktoken_impl.py`（`TiktokenTokenizer`、`build_tokenizer()`）（`bpe.py` 留作 P3） | 四处重复的 `tiktoken.get_encoding("gpt2")` |
 | `data/` | 滑窗数据集 / dataloader | `data_preprocess.py` |
 | `train/` | `losses.py` / `metrics.py`(perplexity) / `scheduler.py`(warmup+cosine) / `trainer.py`(续训+累积+AMP) | `module_train.py` |
 | `generate/` | `sampling.py`(greedy/temp/top-k/top-p) / `kv_cache.py` | `module_load_param.py:generate`、`generate_text_simple.py` |
@@ -119,7 +140,8 @@ ruff check src/my_llm/model                       # 局部 lint（不影响全�
 
 模型侧已确认的不变量（改动后必须仍然成立）：
 - `model/gpt.py:65` `self.out_head.weight = self.tok_emb.weight` —— 同一 `nn.Parameter` 对象；
-- `model/attention.py:116` 掩码用 `torch.finfo(dtype).min`，且填在**缩放之后**的分数上；
+- `model/attention.py:120` 掩码用 `torch.finfo(dtype).min`，且填在**缩放之后**的分数上（`:113` 缩放，
+  `:118` 用 `.to(torch.bool)`/`cast` 绕开 mypy strict 对 `.bool()` 的报错）；
 - `config.py:48` `qkv_bias: bool = True`。
 
 ## Conventions and gotchas
