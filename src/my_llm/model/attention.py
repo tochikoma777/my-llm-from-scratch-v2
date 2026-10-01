@@ -71,10 +71,14 @@ class MultiHeadAttention(nn.Module):
 
         self.dropout = nn.Dropout(cfg.drop_rate)
 
-        # 因果掩码注册为 buffer：非参数，但会随 state_dict 一起保存/加载
+        # 因果掩码注册为 buffer：非参数，且 persistent=False —— 不进 state_dict。
+        # 原因：它可由 (context_length, context_length) 完全重建，写进 ckpt 既浪费空间
+        # （1024x1024 fp32 = 4MB），又会让不同 context_length 的模型之间
+        # load_state_dict 因形状不符直接崩。
         self.register_buffer(
             "mask",
             torch.triu(torch.ones(cfg.context_length, cfg.context_length), diagonal=1),
+            persistent=False,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

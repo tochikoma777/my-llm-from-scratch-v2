@@ -1,0 +1,33 @@
+# Alpaca 指令微调的可选配置：355M + bf16
+#
+# 与 configs/sft-alpaca.yaml 的差异只有 model 段（其余字段保持一致，便于 diff）。
+# ⚠️ 本配置在 RTX 5060 Laptop / 8GB 上只能用 bf16：
+#    355M 参数 × (4B 权重 + 4B 梯度 + 8B AdamW 状态) ≈ 5.7GB，再加激活值，fp32 必然 OOM。
+model:
+  config: configs/gpt2-medium.yaml
+  size: 355M
+  precision: bf16
+
+data:
+  local_json: null
+  train_ratio: 0.85
+  test_ratio: 0.10
+
+train:
+  # 模型变大后 batch_size 降到 4（v1 data_preprocess 默认 8 也是针对 124M 的）
+  batch_size: 4
+  num_epochs: 2
+  learning_rate: 0.00005
+  weight_decay: 0.1
+  allowed_max_length: 1024
+  num_workers: 0
+
+generation:
+  max_new_tokens: 256
+  temperature: 0.0
+  top_k: null
+  eos_id: 50256
+
+output:
+  responses_json: outputs/instruction-data-with-response-medium.json
+  model_pth: outputs/model-sft-medium.pth

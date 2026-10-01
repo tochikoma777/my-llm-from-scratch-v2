@@ -10,8 +10,8 @@ v2 以 HF 权重为主，TF 兼容层退化为可选（`weights/openai_tf.py`）
     transformer.h.{i}.ln_1.weight     -> trf_blocks[i].norm1.scale
     transformer.h.{i}.attn.c_attn.*   -> trf_blocks[i].att.W_{query,key,value}.*（切 q/k/v）
     transformer.h.{i}.attn.c_proj.*   -> trf_blocks[i].att.out_proj.*（转置）
-    transformer.h.{i}.mlp.c_fc.*      -> trf_blocks[i].ff.layers[0].*（转置）
-    transformer.h.{i}.mlp.c_proj.*    -> trf_blocks[i].ff.layers[2].*（转置）
+    transformer.h.{i}.mlp.c_fc.*      -> trf_blocks[i].ff.fc1.*（转置）
+    transformer.h.{i}.mlp.c_proj.*    -> trf_blocks[i].ff.fc2.*（转置）
     transformer.ln_f.*                -> final_norm.*
     lm_head.weight                    -> 不加载（已与 tok_emb 共享）
 

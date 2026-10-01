@@ -1,0 +1,9 @@
+# GPT-2 medium (355M) —— 严格对齐 OpenAI / HuggingFace gpt2-medium
+# 供 configs/sft-medium-bf16.yaml 使用；单独训练时请注意显存（bf16 起步）。
+vocab_size: 50257
+context_length: 1024
+emb_dim: 1024
+n_layers: 24
+n_heads: 16
+drop_rate: 0.0
+qkv_bias: true

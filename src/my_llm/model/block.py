@@ -26,10 +26,14 @@ from my_llm.model.norm import LayerNorm, NewGELU
 class FeedForward(nn.Module):
     """前馈网络（v1 `LM:305`）：`Linear -> NewGELU -> Linear`，中间层 4 倍扩展。
 
+    相对 v1 的结构性改动：`nn.Sequential` 换成**具名层**。
+    v1 用 `self.layers[0]` / `self.layers[2]` 取两个线性层（因为 `[1]` 是无参数的 GELU），
+    这是隐式下标约定 —— 调整 FFN 结构时必碎。v2 直接按名字访问。
+
     Attributes:
-        layers: `Sequential(Linear(emb, 4*emb), NewGELU, Linear(4*emb, emb))`。
-            注意索引 1 是激活函数，所以线性层在索引 0 与 2 —— 权重映射依赖这一布局
-            （v1 `LOAD:321` 与 `LOAD:330`）。
+        fc1: 升维线性层，`emb_dim -> 4 * emb_dim`（HF `mlp.c_fc`）。
+        gelu: GELU 激活。
+        fc2: 降维线性层，`4 * emb_dim -> emb_dim`（HF `mlp.c_proj`）。
     """
 
     def __init__(self, cfg: GPTConfig) -> None:
@@ -39,11 +43,9 @@ class FeedForward(nn.Module):
             cfg: 模型配置，消费 `emb_dim`。
         """
         super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(cfg.emb_dim, 4 * cfg.emb_dim),
-            NewGELU(),
-            nn.Linear(4 * cfg.emb_dim, cfg.emb_dim),
-        )
+        self.fc1 = nn.Linear(cfg.emb_dim, 4 * cfg.emb_dim)
+        self.gelu = NewGELU()
+        self.fc2 = nn.Linear(4 * cfg.emb_dim, cfg.emb_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """前向传播。
@@ -54,8 +56,7 @@ class FeedForward(nn.Module):
         Returns:
             与输入同形状的张量。
         """
-        # nn.Module.__call__ 在 torch 的类型存根里返回 Any（同上）
-        output: torch.Tensor = self.layers(x)
+        output: torch.Tensor = self.fc2(self.gelu(self.fc1(x)))
         return output
 
 

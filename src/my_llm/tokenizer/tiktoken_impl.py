@@ -34,8 +34,18 @@ class TiktokenTokenizer:
 
     @property
     def n_vocab(self) -> int:
-        """词表大小。"""
+        """词表大小（`Tokenizer` 协议要求的字段名）。"""
         return int(self.encoding.n_vocab)
+
+    @property
+    def vocab_size(self) -> int:
+        """词表大小别名，与 `GPTConfig.vocab_size` 同名，便于直接对齐配置。"""
+        return int(self.encoding.n_vocab)
+
+    @property
+    def eot_token(self) -> int:
+        """`<|endoftext|>` 的 token ID（GPT-2 BPE 为 50256）。"""
+        return int(self.encoding.eot_token)
 
     def encode(self, text: str, *, allowed_special: Set[str] | None = None) -> list[int]:
         """编码文本为 token ID。

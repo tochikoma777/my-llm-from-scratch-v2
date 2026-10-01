@@ -18,7 +18,9 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
     "pre-commit>=3.8",
-    "transformers>=4.44",   # 仅 parity 测试用
+    # 上界锁 <6：parity 断言依赖 GPT2Config() 默认值与 NewGELUActivation 的实现
+    # （证据见 docs/00-现状盘点.md 第二部分），6.x 一旦改动会让整套 parity 失效
+    "transformers>=5.12,<6",   # 仅 parity 测试用
 ]
 viz = ["seaborn>=0.13"]
 

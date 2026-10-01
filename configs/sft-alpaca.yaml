@@ -1,5 +1,15 @@
-# Alpaca 指令微调的运行参数（模型架构见 configs/gpt2-small.yaml）
+# Alpaca 指令微调的运行参数
 #
+# 默认用 124M：本机是 RTX 5060 Laptop / 8GB 显存，355M 在 fp32 下微调会 OOM。
+# 想跑 355M 用 configs/sft-medium-bf16.yaml（必须开 bf16）。
+model:
+  # 架构超参来自这份 yaml（GPTConfig.from_yaml）
+  config: configs/gpt2-small.yaml
+  # 尺寸标注，仅作记录；真正的 n_layers/emb_dim 以 model.config 为准
+  size: 124M
+  # 可选值 fp32 | bf16。fp32 对 124M 全参数微调在 8GB 上勉强够用
+  precision: fp32
+
 # 数据来源
 data:
   # 缺省从这个 URL 拉 https://raw.githubusercontent.com/rasbt/LLMs-from-scratch/main/ch07/01_main-chapter-code/instruction-data.json
