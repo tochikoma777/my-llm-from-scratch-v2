@@ -1,0 +1,30 @@
+# Alpaca 指令微调的运行参数（模型架构见 configs/gpt2-small.yaml）
+#
+# 数据来源
+data:
+  # 缺省从这个 URL 拉 https://raw.githubusercontent.com/rasbt/LLMs-from-scratch/main/ch07/01_main-chapter-code/instruction-data.json
+  local_json: null
+  # 85% 训练 / 10% 测试 / 5% 验证（沿用 v1 module_fine_tuning.py:344-349 的划分）
+  train_ratio: 0.85
+  test_ratio: 0.10
+
+# 训练超参（微调通常比预训练小 1~2 个数量级）
+train:
+  batch_size: 8
+  num_epochs: 2
+  learning_rate: 0.00005
+  weight_decay: 0.1
+  allowed_max_length: 1024
+  num_workers: 0
+
+# 生成回复时的采样设置（temperature=0 -> 贪婪，评测时更可复现）
+generation:
+  max_new_tokens: 256
+  temperature: 0.0
+  top_k: null
+  eos_id: 50256
+
+# 产物路径（均已 gitignore）
+output:
+  responses_json: outputs/instruction-data-with-response.json
+  model_pth: outputs/model-sft.pth

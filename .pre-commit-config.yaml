@@ -1,0 +1,21 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        files: ^src/
+        # mypy 跑在隔离环境里，依赖必须显式列出：
+        # - torch/numpy：类型注解来源
+        # - types-PyYAML：config.py 用 yaml，缺 stub 会报 import-untyped
+        #   （本地能通过是因为本地装了 pyyaml 本体，被 ignore_missing_imports 放过）
+        additional_dependencies: [torch, numpy, types-PyYAML]
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets

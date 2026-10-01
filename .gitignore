@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/ .ruff_cache/ .mypy_cache/
+htmlcov/ .coverage
+.env
+# 权重与数据 —— 上库前最容易漏的
+*.pt *.pth *.ckpt *.safetensors
+gpt2/ models/ checkpoints/
+data/raw/ data/processed/
+outputs/ runs/
+*.pdf

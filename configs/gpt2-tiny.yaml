@@ -1,0 +1,10 @@
+# CPU 演示配置：几分钟内跑完一轮预训练 + 生成，用于 `make demo` / CI 冒烟。
+# 注意 context_length=256 是**演示尺寸**，与 GPT-2 标准 1024 不同，
+# 因此其权重不可与 OpenAI/HF 权重互换（parity 测试请用 gpt2-small.yaml）。
+vocab_size: 50257
+context_length: 256
+emb_dim: 128
+n_layers: 2
+n_heads: 4
+drop_rate: 0.1
+qkv_bias: true

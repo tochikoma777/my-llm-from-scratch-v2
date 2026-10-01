@@ -1,0 +1,51 @@
+[project]
+name = "my-llm-from-scratch"
+version = "2.0.0"
+description = "GPT-2 from scratch, with numerical parity tests against HuggingFace"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "numpy>=1.26",
+    "tiktoken>=0.7",
+    "pyyaml>=6.0",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.8",
+    "transformers>=4.44",   # 仅 parity 测试用
+]
+viz = ["seaborn>=0.13"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# hatchling 默认按项目名推断 src/<my_llm_from_scratch>/，与实际包名 src/my_llm 不一致，
+# 必须显式声明，否则 `pip install -e .` 会因无法确定打包文件而失败。
+[tool.hatch.build.targets.wheel]
+packages = ["src/my_llm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: parity tests that download/load real weights"]
+addopts = "-m 'not slow'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]
