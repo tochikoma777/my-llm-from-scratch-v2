@@ -6,8 +6,9 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 `v2-work/` 是 v2 重写的工作区；`../v1-reference/`（my-LLM-from-scratch，tochikoma777）是**只读参考**（见下方硬约束 3）。
 
-截至 2026-10-01：HEAD 为 `4419b00 docs(R3a)`（共 4 次提交，57 个被跟踪文件，工作区干净）。
-已落地的是「工程地基 + 模型内核 + 配置层 + 快测套件」，其余模块是**类型完整的存根**。
+截至 2026-10-02：HEAD 为 `92f2edf feat(R3b)`（共 6 次提交，58 个被跟踪文件，工作区干净）。
+已落地的是「工程地基 + 模型内核 + 配置层 + HF 权重加载 + 快测/parity 双套件」，
+其余模块仍是**类型完整的存根**。
 
 **已实现**（可运行）：
 - `src/my_llm/config.py` — `GPTConfig` dataclass，唯一配置来源；`from_yaml` / `gpt2_small()` / `gpt2_tiny()`
@@ -15,15 +16,21 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
   `block.py`（FeedForward + TransformerBlock）、`gpt.py`（GPTModel，含 weight tying）
 - `src/my_llm/tokenizer/` — `protocol.py`（Tokenizer 协议）、`tiktoken_impl.py`（`TiktokenTokenizer` +
   工厂 `build_tokenizer(name="gpt2")`）
+- `src/my_llm/weights/hf.py` — HF state_dict → `GPTModel` 的完整键名映射：`load_hf_weights_into_gpt`
+  （返回**未匹配键列表**，便于断言「没有漏映射」）、`load_weights_from_hf`（严格版，并校验 tie 仍成立）、
+  `hf_key_to_ours`、`load_hf_state_dict`、`gpt_config_from_hf`。要点：`c_attn` 按 q→k→v 切分、
+  Conv1D 形态权重逐层 `.T`、`lm_head.weight` 跳过（硬约束 1）
 
-**存根**（函数体 `raise NotImplementedError`，共 14 个文件）：
+**存根**（函数体 `raise NotImplementedError`，`src/` 下共 13 个文件）：
 `data/dataset.py`、`data/dataloader.py`、`finetune/sft.py`、`generate/sampling.py`、`generate/kv_cache.py`、
 `train/losses.py`、`train/metrics.py`、`train/scheduler.py`、`train/trainer.py`、`utils/seed.py`、
-`utils/logging.py`、`utils/viz.py`、`weights/hf.py`、`weights/openai_tf.py`
+`utils/logging.py`、`utils/viz.py`、`weights/openai_tf.py`
+（`scripts/sft.py` 本体也一样会抛，不计入上面 13 个。）
 
-`tests/` 已有快测套件：`conftest.py` + `test_norm.py` / `test_tying.py` / `test_attention.py` /
-`test_tokenizer.py`，共 15 个用例，`pytest -q` 全绿（0.8s）。**尚无 `slow`（parity）用例**——
-`pytest -m slow` 目前是「15 deselected」，不是故障。`notebooks/` 只有 `.gitkeep`。
+`tests/` 是**双套件**：`conftest.py` + `test_norm.py` / `test_tying.py` / `test_attention.py` /
+`test_tokenizer.py` / **`test_parity_hf.py`**。快测 15 个用例（`pytest -q` 全绿，~2s），
+parity 慢测 16 个用例（`pytest -m slow -v` 实测 **16 passed / 15 deselected，~25s**，
+首次运行会真实下载 `gpt2` 权重）。`notebooks/` 只有 `.gitkeep`。
 `configs/` 有 5 份 yaml：`gpt2-small.yaml` / `gpt2-tiny.yaml` / `gpt2-medium.yaml`（架构），
 以及 `sft-alpaca.yaml` / `sft-medium-bf16.yaml`（**嵌套**运行配置，见 Commands 里的坑）。
 `docs/00-现状盘点.md` 是 v1 的完整审计报告（含行号证据、权重映射表、与 HF 的架构差异、取舍建议），
@@ -39,6 +46,9 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 - 网络：PyPI 走 tuna 镜像可通；**github.com 不可达**。因此
   - `pre-commit` 无法拉取新的 hook 版本（`rev` 改不动，改了会卡死在初始化）；
   - parity 测试下载 HF 权重依赖 `Makefile` 里的 `HF_ENDPOINT=https://hf-mirror.com`，不要删掉。
+- HF 缓存不在默认位置：本机 `HF_HOME=/data/cache/huggingface`（不是 `~/.cache/huggingface`），
+  排查「到底下没下权重」时别找错目录。`gpt2` 权重约 548MB，本机已缓存，
+  所以 `make test-full` 现在约 25s 就能跑完（首次运行要多花下载时间）。
 
 ## Commands
 
@@ -46,9 +56,9 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 make install     # pip install -e ".[dev,viz]" + pre-commit install
 make lint        # ruff check src tests scripts + mypy src（当前全绿）
 make fmt         # ruff format src tests scripts
-make test        # pytest -q，跑 15 个快测
-make test-full   # pytest -q -m slow -v，parity 测试，会下载 GPT-2 权重
-                 # （当前还没有 slow 用例，结果是「15 deselected」，非故障）
+make test        # pytest -q，跑 15 个快测（跳过 slow）
+make test-full   # pytest -q -m slow -v，parity 测试，16 个用例，首次会下载 GPT-2 权重
+                 # （实测 16 passed / 15 deselected，约 25s）
 make check       # lint + test
 make demo        # tiny 配置训练 + 生成（⚠️ 见下方警告，当前跑不通）
 make clean       # 清缓存
@@ -59,8 +69,9 @@ make clean       # 清缓存
 > 实测 `python scripts/train.py --config configs/gpt2-tiny.yaml` 抛 `NotImplementedError`（`train/trainer.py:147`）。
 > 另外 `scripts/train.py:55`（`optimizer=None`）与 `scripts/generate.py:54`（`idx=None`）是标了 `TODO` 的占位实参，
 > 靠 `# type: ignore` 过 mypy，不是已接通的逻辑。
-> 当前唯一可运行的端到端路径是模型前向：
-> `GPTModel(GPTConfig.gpt2_tiny())(torch.zeros(2, 16, dtype=torch.long))` → `[2, 16, 50257]`。
+> 当前可运行的端到端路径只有两条：模型前向
+> `GPTModel(GPTConfig.gpt2_tiny())(torch.zeros(2, 16, dtype=torch.long))` → `[2, 16, 50257]`，
+> 以及「HF 权重加载 + parity」（`pytest -m slow -v`，见下）。
 
 单个文件 / 单个用例：
 
@@ -70,16 +81,38 @@ pytest tests/test_tying.py::test_head_shares_storage -v  # 单用例
 pytest tests/test_norm.py -k "gelu or norm" -v         # 按名字筛
 pytest tests/test_tokenizer.py -k "roundtrip" -v       # 参数化用例按 id 筛
 pytest -m slow -v                                      # 跑 parity；命令行 -m 覆盖 addopts 的 'not slow'
+pytest "tests/test_parity_hf.py::test_block_hidden_states[3]" -m slow -v  # 单个 parity 用例（路径要加引号）
 mypy src/my_llm/model/gpt.py                           # 单文件类型检查
 ruff check src/my_llm/model                            # 局部 lint（不影响全局）
 ```
 
 补充约定：
 - pytest 默认 `addopts = "-m 'not slow'"`，即日常不跑联网测试；**任何会下载真实权重的测试必须标 `@pytest.mark.slow`**。
+  注意 `pytest tests/test_parity_hf.py -v` **不加 `-m slow` 会静默选 0 个用例**（实测「16 deselected / 0 selected」），
+  不是文件坏了，加 `-m slow` 即可。
+- **parity 有专属坑**（都是踩出来的，改 `tests/test_parity_hf.py` 前先看这里）：
+  - HF 侧必须 `attn_implementation="eager"`（`tests/conftest.py:80`）：默认的 sdpa 不返回注意力权重，
+    `output_attentions=True` 时 `attentions` 是空元组；
+  - transformers 5.x 会把 `hidden_states[-1]` 换成 `ln_f` 之后的结果，**不是**最后一个 block 的输出，
+    直接拿 `output_hidden_states=True` 对拍会得到 1e0 量级的假失败；逐 block 比对必须挂 forward hook
+    （`tests/test_parity_hf.py:103` `_hf_block_outputs`）；
+  - 失败时**先看 diff 量级再定位**（`tests/test_parity_hf.py:19-23`）：
+
+    | 量级 | 大概率原因 |
+    |---|---|
+    | `0 ~ 1e-6` | 正常 fp32 噪声 |
+    | `~1e-5` | 忘记 `eval()`（dropout 没关） |
+    | `~1e-3` | GELU 变体不对，或掩码用了 `-inf` |
+    | `1e-2 ~ 1e-1` | 漏了转置，或 QKV 切分顺序错 |
+    | `>= 1e0` | 权重整体没加载 |
+
 - `tests/conftest.py` 提供 session 级 fixture：`tiny_cfg`（读 `configs/gpt2-tiny.yaml`）、`tiny_model`
   （`torch.manual_seed(0)` 初始化、`eval()`、CPU+fp32）、`sample_ids`（`(2,16)` 固定 token 批次），
-  以及模块常量 `DEVICE="cpu"` / `DTYPE=torch.float32` / `REPO_ROOT`（用 `__file__` 定位，换 CWD 不崩）。
+  以及模块常量 `DEVICE="cpu"` / `DTYPE=torch.float32` / `REPO_ROOT` / `TINY_CONFIG_PATH` / `SMALL_CONFIG_PATH`
+  （`REPO_ROOT` 用 `__file__` 定位，换 CWD 不崩）。
   新测试优先复用这些 fixture，不要自己 new 一份配置。
+  另有三个 **slow 专用** fixture：`hf_gpt2`（HF 官方 `gpt2`，eager）、`our_gpt2_loaded`（装上同一份权重的
+  `GPTModel`）、`parity_fp64`（两者的 fp64 深拷贝）——**它们会联网下载，只能被标 `@pytest.mark.slow` 的用例使用**。
   （`tokenizer` fixture 是 module 级，定义在 `tests/test_tokenizer.py:15`，不在 conftest 里。）
 - 包通过 editable 安装导入（`import my_llm`）；脚本 `scripts/*.py` 从**仓库根目录**运行，
   `--config` 等路径是相对根目录的（如 `configs/gpt2-tiny.yaml`）。
@@ -106,7 +139,7 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 
 要在本地复刻 CI：用 `pip install -e ".[dev]"`（**不带** `viz`，CI 不装 seaborn）。
 另有 `Dockerfile`（`python:3.11-slim`，`HF_ENDPOINT` 已写进镜像 ENV，CMD 为 `scripts/generate.py`）——
-它同样会命中上面的存根，现阶段只能用来验证安装与 import。
+由于 `generate/sampling.py`、`train/trainer.py` 等仍是存根，它目前只能用来验证安装 / import / HF 权重加载路径。
 
 ## 文档地图
 
@@ -123,14 +156,15 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 
 ## Architecture
 
-按层划分，越靠下越基础；当前只有 `config` + `model` + `tokenizer` 有真实实现：
+按层划分，越靠下越基础；当前只有 `config` + `model` + `tokenizer` + `weights/hf.py` 有真实实现，
+其余包内的模块全是存根：
 
 | 包 | 职责 | v1 来源 |
 |---|---|---|
 | `config.py` | `GPTConfig`（vocab_size / context_length / emb_dim / n_layers / n_heads / drop_rate / qkv_bias），`qkv_bias` 默认 True；`from_yaml` 只吃扁平 yaml | v1 三处冲突的 `GPT_CONFIG_124M` |
 | `configs/` | `gpt2-{small,tiny,medium}.yaml` 扁平架构配置；`sft-*.yaml` 嵌套运行配置（`model.config` 再指向架构 yaml） | v1 的 `__main__` 字面量 |
 | `model/` | 模型本体。`norm.py` / `attention.py` / `block.py` / `gpt.py` | `language_module.py` |
-| `weights/` | `openai_tf.py`（TF→PT 映射，v1 独特资产）、`hf.py`（HF 加载，parity 取数） | `module_load_param.py` |
+| `weights/` | `hf.py`（**已实现**，HF state_dict → GPTModel 映射，parity 取数入口）、`openai_tf.py`（仍为存根，TF→PT 兼容层，v1 独特资产，留作双路交叉验证） | `module_load_param.py` |
 | `tokenizer/` | `protocol.py`（`Tokenizer` runtime_checkable 协议）+ `tiktoken_impl.py`（`TiktokenTokenizer`、`build_tokenizer()`）（`bpe.py` 留作 P3） | 四处重复的 `tiktoken.get_encoding("gpt2")` |
 | `data/` | 滑窗数据集 / dataloader | `data_preprocess.py` |
 | `train/` | `losses.py` / `metrics.py`(perplexity) / `scheduler.py`(warmup+cosine) / `trainer.py`(续训+累积+AMP) | `module_train.py` |
@@ -166,9 +200,12 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
    weight tying 由 `GPTModel.__init__` 保证（`self.out_head.weight = self.tok_emb.weight`），
    任何形式的赋值（含 copy / assign / deepcopy）都会重新打断 tie，导致微调时两个头漂移。
 
-2. **parity 测试规格**：强制 `device="cpu"`、`dtype=torch.float32`。
-   阈值 `1e-5` 是硬线，任何情况下不得放宽。
-   原因：GPU 上 fp32 矩阵乘法有非确定性，噪声与阈值同量级，会产生"有时过有时不过"的幽灵失败。
+2. **parity 测试规格**：强制 `device="cpu"`、`dtype=torch.float32`，且是**双断言**（`tests/test_parity_hf.py:49` `_assert_parity`）：
+   - **fp64 绝对 `1e-5`**：两边都转 fp64 再比，实测互差 ~3e-13，是「数学正确性」的硬证据，阈值不可动。
+   - **fp32 `1e-5 × max(1, max|ref|)`**：保留真实推理 dtype，按参考张量量级缩放（等价相对 1e-5）。
+     不能改成 fp32 绝对 1e-5：GPT-2 残差流量级到 3e3，fp32 自噪声就有 1e-4，**低于噪声地板的阈值只会产出
+     「有时过有时不过」的幽灵失败**。
+   - 禁止再放宽任何一侧。原因：GPU 上 fp32 矩阵乘法有非确定性，噪声与阈值同量级时结果不可复现。
 
 3. **v1 只读**：`../v1-reference` 是只读参考，任何情况下不得修改其中的文件。
 
