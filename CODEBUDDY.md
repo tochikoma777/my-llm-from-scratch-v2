@@ -20,17 +20,22 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
   （返回**未匹配键列表**，便于断言「没有漏映射」）、`load_weights_from_hf`（严格版，并校验 tie 仍成立）、
   `hf_key_to_ours`、`load_hf_state_dict`、`gpt_config_from_hf`。要点：`c_attn` 按 q→k→v 切分、
   Conv1D 形态权重逐层 `.T`、`lm_head.weight` 跳过（硬约束 1）
+- `src/my_llm/weights/openai_tf.py` — OpenAI TensorFlow 检查点加载：`download_file`（幂等 + 超时重试）、
+  `download_and_load_gpt2`、`load_gpt2_params_from_tf_ckpt`、`load_openai_tf_weights_into_gpt`
+  （同样返回未匹配键列表）。tensorflow 惰性导入；`assign` 与 v1 不同——它返回张量而非新
+  `nn.Parameter`，调用方 `copy_` 进现有参数（见模块 docstring 第 3 点）
 
-**存根**（函数体 `raise NotImplementedError`，`src/` 下共 13 个文件）：
+**存根**（函数体 `raise NotImplementedError`，`src/` 下共 12 个文件）：
 `data/dataset.py`、`data/dataloader.py`、`finetune/sft.py`、`generate/sampling.py`、`generate/kv_cache.py`、
 `train/losses.py`、`train/metrics.py`、`train/scheduler.py`、`train/trainer.py`、`utils/seed.py`、
-`utils/logging.py`、`utils/viz.py`、`weights/openai_tf.py`
-（`scripts/sft.py` 本体也一样会抛，不计入上面 13 个。）
+`utils/logging.py`、`utils/viz.py`
+（`scripts/sft.py` 本体也一样会抛，不计入上面 12 个。）
 
 `tests/` 是**双套件**：`conftest.py` + `test_norm.py` / `test_tying.py` / `test_attention.py` /
-`test_tokenizer.py` / **`test_parity_hf.py`**。快测 15 个用例（`pytest -q` 全绿，~2s），
-parity 慢测 16 个用例（`pytest -m slow -v` 实测 **16 passed / 15 deselected，~25s**，
-首次运行会真实下载 `gpt2` 权重）。`notebooks/` 只有 `.gitkeep`。
+`test_tokenizer.py` / **`test_parity_hf.py`** / **`test_crossload.py`**。快测 15 个用例（`pytest -q` 全绿，~1s），
+parity 慢测 16 个用例（`pytest -m slow -v` 实测 **16 passed，~25s**，首次运行会真实下载 `gpt2` 权重），
+crossload 慢测 2 个用例（双路径交叉验证，实测 **2 passed，~40s**，见 Environment 里 TF 权重的坑）。
+`notebooks/` 只有 `.gitkeep`。
 `configs/` 有 5 份 yaml：`gpt2-small.yaml` / `gpt2-tiny.yaml` / `gpt2-medium.yaml`（架构），
 以及 `sft-alpaca.yaml` / `sft-medium-bf16.yaml`（**嵌套**运行配置，见 Commands 里的坑）。
 `docs/00-现状盘点.md` 是 v1 的完整审计报告（含行号证据、权重映射表、与 HF 的架构差异、取舍建议），
@@ -48,7 +53,21 @@ parity 慢测 16 个用例（`pytest -m slow -v` 实测 **16 passed / 15 deselec
   - parity 测试下载 HF 权重依赖 `Makefile` 里的 `HF_ENDPOINT=https://hf-mirror.com`，不要删掉。
 - HF 缓存不在默认位置：本机 `HF_HOME=/data/cache/huggingface`（不是 `~/.cache/huggingface`），
   排查「到底下没下权重」时别找错目录。`gpt2` 权重约 548MB，本机已缓存，
-  所以 `make test-full` 现在约 25s 就能跑完（首次运行要多花下载时间）。
+  所以 `pytest -m slow` 现在不用联网就能跑完。
+- **`tensorflow-cpu` 已装在本机（2.21.0）**，只为 `weights/openai_tf.py` 这一条可选路径服务；
+  `pyproject.toml` 主依赖里**不要**加 TF（CONTRIBUTING 硬规则 6）。TF 2.21 里
+  `tf.train.list_variables` / `load_variable` 仍可用，不需要退回旧版。
+- **OpenAI 的 Azure 源（`openaipublic.blob.core.windows.net`）在国内极慢**（实测）：
+  单线程 ~45 KB/s（475MB 要 3 小时）；8 并发 Range ~348 KB/s；`aria2c -x16 -s16` 约 14 分钟（~590 KiB/s）。
+  因此想跑 `tests/test_crossload.py::test_tf_and_hf_agree`，先用多线程工具把 7 个文件预置到
+  `outputs/openai-tf/124M/`（该目录已被 `.gitignore` 覆盖），我们的 `download_file` 会因
+  `Content-Length` 一致自动跳过（实测 7/7 skip）。
+  两个坑：
+  - **别中途 kill aria2**：它预分配文件，`ls` 显示的已是最终大小，段数据却还没写完。
+    拿这种文件给 TF 读会报 `Checksum does not match: stored ... vs. calculated ...`——
+    这不是 TF 侧的 bug，也不是我们的映射写错了，文件确实是坏的，删掉重下即可。
+  - **下完用 Azure 的 `Content-MD5` 校验**：124M 的 `model.ckpt.data-00000-of-00001`
+    正确值是 size `497759232` / md5 `f48b9cf1a525a603be52258f69bf9162`。
 
 ## Commands
 
@@ -57,8 +76,8 @@ make install     # pip install -e ".[dev,viz]" + pre-commit install
 make lint        # ruff check src tests scripts + mypy src（当前全绿）
 make fmt         # ruff format src tests scripts
 make test        # pytest -q，跑 15 个快测（跳过 slow）
-make test-full   # pytest -q -m slow -v，parity 测试，16 个用例，首次会下载 GPT-2 权重
-                 # （实测 16 passed / 15 deselected，约 25s）
+make test-full   # pytest -q -m slow -v，parity + crossload，共 18 个用例，首次会下载 GPT-2 权重
+                 # （实测 18 passed / 15 deselected，约 41s；crossload 首次要下 OpenAI TF 权重，见 Environment）
 make check       # lint + test
 make demo        # tiny 配置训练 + 生成（⚠️ 见下方警告，当前跑不通）
 make clean       # 清缓存
@@ -105,6 +124,14 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
     | `~1e-3` | GELU 变体不对，或掩码用了 `-inf` |
     | `1e-2 ~ 1e-1` | 漏了转置，或 QKV 切分顺序错 |
     | `>= 1e0` | 权重整体没加载 |
+
+- **crossload（`tests/test_crossload.py`）是两条权重路径的对拍**，与 parity 互补：
+  `test_tf_and_hf_agree` 用真实 OpenAI TF 检查点（需 TF + 475MB 下载）；
+  `test_openai_tf_loader_matches_hf_loader` 把 HF state_dict 摆成 TF 嵌套参数形态喂给 TF 加载器，
+  **不需要 TF、不需要额外下载**就能验证 QKV 顺序 / 转置 / g-b 映射（实测 diff 精确为 0）。
+  后者成立的前提是 TF 与 HF 的 Conv1D 排布一致（`c_attn` 都是 `(emb, 3*emb)`），
+  所以 HF 权重可以直接充当 TF 参数。
+  TF 未装或下载失败时必须是 **skip**（`pytest.importorskip` / `pytest.skip`），不能用 fail 掩盖。
 
 - `tests/conftest.py` 提供 session 级 fixture：`tiny_cfg`（读 `configs/gpt2-tiny.yaml`）、`tiny_model`
   （`torch.manual_seed(0)` 初始化、`eval()`、CPU+fp32）、`sample_ids`（`(2,16)` 固定 token 批次），
@@ -156,7 +183,7 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 
 ## Architecture
 
-按层划分，越靠下越基础；当前只有 `config` + `model` + `tokenizer` + `weights/hf.py` 有真实实现，
+按层划分，越靠下越基础；当前只有 `config` + `model` + `tokenizer` + `weights/` 有真实实现，
 其余包内的模块全是存根：
 
 | 包 | 职责 | v1 来源 |
@@ -164,7 +191,7 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 | `config.py` | `GPTConfig`（vocab_size / context_length / emb_dim / n_layers / n_heads / drop_rate / qkv_bias），`qkv_bias` 默认 True；`from_yaml` 只吃扁平 yaml | v1 三处冲突的 `GPT_CONFIG_124M` |
 | `configs/` | `gpt2-{small,tiny,medium}.yaml` 扁平架构配置；`sft-*.yaml` 嵌套运行配置（`model.config` 再指向架构 yaml） | v1 的 `__main__` 字面量 |
 | `model/` | 模型本体。`norm.py` / `attention.py` / `block.py` / `gpt.py` | `language_module.py` |
-| `weights/` | `hf.py`（**已实现**，HF state_dict → GPTModel 映射，parity 取数入口）、`openai_tf.py`（仍为存根，TF→PT 兼容层，v1 独特资产，留作双路交叉验证） | `module_load_param.py` |
+| `weights/` | `hf.py` 与 `openai_tf.py` 均已实现：前者是 parity 取数入口，后者是 TF→PT 兼容层（v1 独特资产），两条路径的数值等价性由 `tests/test_crossload.py` 交叉验证 | `module_load_param.py` |
 | `tokenizer/` | `protocol.py`（`Tokenizer` runtime_checkable 协议）+ `tiktoken_impl.py`（`TiktokenTokenizer`、`build_tokenizer()`）（`bpe.py` 留作 P3） | 四处重复的 `tiktoken.get_encoding("gpt2")` |
 | `data/` | 滑窗数据集 / dataloader | `data_preprocess.py` |
 | `train/` | `losses.py` / `metrics.py`(perplexity) / `scheduler.py`(warmup+cosine) / `trainer.py`(续训+累积+AMP) | `module_train.py` |
@@ -189,16 +216,23 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
   结论冲突时以 **hook（v1.11.2）为准**，同样不要改 `rev`。
 - **pre-commit 的 mypy 跑在隔离环境**：`additional_dependencies` 必须显式列出 `torch, numpy, types-PyYAML`，
   否则 `config.py` 的 `import yaml` 会报 `import-untyped`（本地能过是因为本地装了 pyyaml 本体）。
-- **产物不要入库**：`.gitignore` 已覆盖 `*.pt *.pth *.ckpt *.safetensors`、`gpt2/ models/ checkpoints/`、
-  `data/raw/ data/processed/`、`outputs/ runs/`、`*.pdf`。
+- **产物不要入库**。注意 `.gitignore` **一行只能写一个模式**：写在一行上（如过去的
+  `outputs/ runs/`）会被 git 当成一个带空格的模式、完全不生效。2026-10-02 修的就是这处——
+  `outputs/` 原先其实没被忽略，OpenAI TF 权重的 475MB 差点混进提交。
+  2026-10-02 已把全部同类问题一次拆行修好，并用 `git check-ignore -v` 逐条验证生效
+  （目录型模式要拿真实目录测，对不存在的路径 `git check-ignore` 会报 NOT IGNORED，属误报）。
 - 提交前无需手动格式化：pre-commit 会跑 ruff / ruff-format / mypy / detect-secrets，
   hook 改写文件后**重跑一次提交**即可（第一次失败属正常）。
 
 ## 项目硬约束（v2 重构）
 
-1. **weight tying**：任何权重加载代码都不得给 `out_head` 赋值。
-   weight tying 由 `GPTModel.__init__` 保证（`self.out_head.weight = self.tok_emb.weight`），
-   任何形式的赋值（含 copy / assign / deepcopy）都会重新打断 tie，导致微调时两个头漂移。
+1. **weight tying**：任何权重加载代码都不得给 `out_head` 赋值，**也不得替换 `tok_emb.weight`
+   这个 `nn.Parameter` 对象**——后者是"间接打断"，比前者更隐蔽，后果一样。
+   weight tying 由 `GPTModel.__init__` 保证（`self.out_head.weight = self.tok_emb.weight` 是**同一个对象**）；
+   一旦把 `tok_emb.weight` 换成新对象，`out_head.weight` 仍指向旧的那块，tie 当场断开。
+   v1 的 `assign`（`LOAD:235`）返回的正是新 `nn.Parameter`，所以即便不碰 `out_head` 也会中招。
+   因此加载器**只准 `copy_` 进现有参数**：`weights/hf.py` 与 `weights/openai_tf.py` 都这么做，
+   且两者结束处都有 `assert gpt.out_head.weight is gpt.tok_emb.weight` 兜底。
 
 2. **parity 测试规格**：强制 `device="cpu"`、`dtype=torch.float32`，且是**双断言**（`tests/test_parity_hf.py:49` `_assert_parity`）：
    - **fp64 绝对 `1e-5`**：两边都转 fp64 再比，实测互差 ~3e-13，是「数学正确性」的硬证据，阈值不可动。

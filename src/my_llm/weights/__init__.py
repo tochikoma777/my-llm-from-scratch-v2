@@ -16,13 +16,19 @@ from my_llm.weights.hf import hf_key_to_ours as hf_key_to_ours
 from my_llm.weights.hf import load_hf_state_dict as load_hf_state_dict
 from my_llm.weights.hf import load_hf_weights_into_gpt as load_hf_weights_into_gpt
 from my_llm.weights.hf import load_weights_from_hf as load_weights_from_hf
+from my_llm.weights.openai_tf import download_and_load_gpt2 as download_and_load_gpt2
+from my_llm.weights.openai_tf import (
+    load_openai_tf_weights_into_gpt as load_openai_tf_weights_into_gpt,
+)
 from my_llm.weights.openai_tf import load_weights_into_gpt as load_weights_into_gpt
 
 __all__ = [
+    "download_and_load_gpt2",
     "gpt_config_from_hf",
     "hf_key_to_ours",
     "load_hf_state_dict",
     "load_hf_weights_into_gpt",
+    "load_openai_tf_weights_into_gpt",
     "load_weights_from_hf",
     "load_weights_into_gpt",
 ]
