@@ -3,19 +3,28 @@
 
 用法：
     python scripts/download_weights.py --source hf --model gpt2
-    python scripts/download_weights.py --source openai --model-size 124M --models-dir gpt2
+    python scripts/download_weights.py --source openai --model-size 124M
 
 为什么既能拉 HF 又能拉 OpenAI：两者可以做**交叉验证**——同一层的张量应当完全一致，
 这是 `tests/test_parity_hf.py` 里最强的一条断言。
+
+HF 镜像：脚本在导入权重模块前给 `HF_ENDPOINT` 兜底为 `https://hf-mirror.com`（`Makefile:3`
+只在 `make` 目标里生效，直接 `python scripts/...` 拿不到，会去连 huggingface.co）。
+已有 `HF_ENDPOINT` 时不覆盖，可自行改成别的镜像或官方源。
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
-from my_llm.weights.hf import load_hf_state_dict
-from my_llm.weights.openai_tf import download_and_load_gpt2
+# 必须在任何 huggingface_hub 调用之前设置；transformers 在 load_hf_state_dict 里惰性导入，
+# 所以放在这里（模块导入期）仍然生效。
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
+from my_llm.weights.hf import load_hf_state_dict  # noqa: E402
+from my_llm.weights.openai_tf import download_and_load_gpt2  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,7 +42,12 @@ def parse_args() -> argparse.Namespace:
         default="124M",
         help="OpenAI 模型尺寸（source=openai 时）",
     )
-    parser.add_argument("--models-dir", type=Path, default=Path("gpt2"), help="OpenAI 权重落盘目录")
+    parser.add_argument(
+        "--models-dir",
+        type=Path,
+        default=Path("outputs/openai-tf"),
+        help="OpenAI 权重落盘目录（实际落在 <models-dir>/<model-size>/；输出统一到 outputs/）",
+    )
     return parser.parse_args()
 
 

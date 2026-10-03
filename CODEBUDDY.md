@@ -6,9 +6,10 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 `v2-work/` 是 v2 重写的工作区；`../v1-reference/`（my-LLM-from-scratch，tochikoma777）是**只读参考**（见下方硬约束 3）。
 
-截至 2026-10-02：HEAD 为 `92f2edf feat(R3b)`（共 6 次提交，58 个被跟踪文件，工作区干净）。
-已落地的是「工程地基 + 模型内核 + 配置层 + HF 权重加载 + 快测/parity 双套件」，
-其余模块仍是**类型完整的存根**。
+截至 2026-10-03：HEAD 为 `2b32a3f feat(R3c)`（共 7 次提交，59 个被跟踪文件）。
+已落地的是「工程地基 + 模型内核 + 配置层 + HF 权重加载 + OpenAI TF 权重加载 +
+快测 / parity / crossload **三套件**」，其余模块仍是**类型完整的存根**
+（填充顺序见下方「存根填充优先级（P0→P3）」）。
 
 **已实现**（可运行）：
 - `src/my_llm/config.py` — `GPTConfig` dataclass，唯一配置来源；`from_yaml` / `gpt2_small()` / `gpt2_tiny()`
@@ -31,7 +32,7 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 `utils/logging.py`、`utils/viz.py`
 （`scripts/sft.py` 本体也一样会抛，不计入上面 12 个。）
 
-`tests/` 是**双套件**：`conftest.py` + `test_norm.py` / `test_tying.py` / `test_attention.py` /
+`tests/` 是**三套件**：`conftest.py` + `test_norm.py` / `test_tying.py` / `test_attention.py` /
 `test_tokenizer.py` / **`test_parity_hf.py`** / **`test_crossload.py`**。快测 15 个用例（`pytest -q` 全绿，~1s），
 parity 慢测 16 个用例（`pytest -m slow -v` 实测 **16 passed，~25s**，首次运行会真实下载 `gpt2` 权重），
 crossload 慢测 2 个用例（双路径交叉验证，实测 **2 passed，~40s**，见 Environment 里 TF 权重的坑）。
@@ -50,7 +51,9 @@ crossload 慢测 2 个用例（双路径交叉验证，实测 **2 passed，~40s*
 - `tensorflow` **未装**——它只是 `weights/openai_tf.py` 的可选依赖，不要把它加回主依赖。
 - 网络：PyPI 走 tuna 镜像可通；**github.com 不可达**。因此
   - `pre-commit` 无法拉取新的 hook 版本（`rev` 改不动，改了会卡死在初始化）；
-  - parity 测试下载 HF 权重依赖 `Makefile` 里的 `HF_ENDPOINT=https://hf-mirror.com`，不要删掉。
+  - parity 测试下载 HF 权重依赖镜像源，不要删掉两处设置：`Makefile:3` 的
+    `export HF_ENDPOINT ?= https://hf-mirror.com`（覆盖 `make` 目标），以及
+    `scripts/download_weights.py:24` 的 `os.environ.setdefault(...)`（直接 `python scripts/...` 时的兜底）。
 - HF 缓存不在默认位置：本机 `HF_HOME=/data/cache/huggingface`（不是 `~/.cache/huggingface`），
   排查「到底下没下权重」时别找错目录。`gpt2` 权重约 548MB，本机已缓存，
   所以 `pytest -m slow` 现在不用联网就能跑完。
@@ -81,10 +84,27 @@ make test-full   # pytest -q -m slow -v，parity + crossload，共 18 个用例�
 make check       # lint + test
 make demo        # tiny 配置训练 + 生成（⚠️ 见下方警告，当前跑不通）
 make clean       # 清缓存
+
+# scripts/ 下唯一能真跑通的入口（其余都是存根或有 TODO 占位实参）
+python scripts/download_weights.py --source hf --model gpt2
+python scripts/download_weights.py --source openai --model-size 124M
+#   → OpenAI 权重默认落到 outputs/openai-tf/<model-size>/（硬约束：输出统一 outputs/）
+#   → 脚本内部已 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")，
+#     所以不必手动加前缀；要换源时自己 export HF_ENDPOINT 覆盖即可
+
+# 自查还剩多少存根（当前 12 个 src/ 文件 + scripts/sft.py）
+grep -rl NotImplementedError --include="*.py" src scripts
 ```
 
-> ⚠️ **`make demo` / `scripts/*.py` 目前无法端到端跑通**：它们依赖的三个模块仍是存根
-> （`train/trainer.py`、`data/dataloader.py`、`generate/sampling.py`）。
+> ⚠️ **提交前不要手动格式化**：pre-commit 会跑 ruff / ruff-format / mypy / detect-secrets。
+> hook 改写文件后**重跑一次提交**即可，**第一次提交失败是正常的**，不要 `git commit --no-verify`。
+
+> ⚠️ **`make demo` / `scripts/*.py` 目前无法端到端跑通**，缺口按优先级拆开看：
+> - `scripts/generate.py:18` 直接 import `generate/sampling.py`（**P0**）；
+> - `scripts/train.py:19` 直接 import `train/trainer.py`（**P1**），而 `Trainer.train()` 内部
+>   要吃 `data/dataloader.py`（**P0**）产的 loader——现在两处都还是 `None` 占位
+>   （`scripts/train.py:55,58`）。
+> 所以 `make demo` 要等 **P0 + P1 都完成**才是真闭环，不是只补 P0。
 > 实测 `python scripts/train.py --config configs/gpt2-tiny.yaml` 抛 `NotImplementedError`（`train/trainer.py:147`）。
 > 另外 `scripts/train.py:55`（`optimizer=None`）与 `scripts/generate.py:54`（`idx=None`）是标了 `TODO` 的占位实参，
 > 靠 `# type: ignore` 过 mypy，不是已接通的逻辑。
@@ -199,6 +219,25 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 | `finetune/` | Alpaca SFT | `module_fine_tuning.py` |
 | `utils/` | `seed.py` / `logging.py` / `viz.py` | v1 无对应 |
 
+**`weights/` 是并列的两条 loader**，共享同一套键名约定（QKV 切分顺序、Conv1D 转置、g-b 后缀）：
+`hf.py` 是主力（parity 取数入口），`openai_tf.py` 是 v1 资产（TF→PT 兼容层）。
+**任一边改键名映射，都必须同步 `tests/test_crossload.py`**——CONTRIBUTING 硬规则 4 只写了
+「改 `model/` 必须同步 parity」，没覆盖 `weights/`，这条在这里补齐。
+
+## 存根填充优先级（P0→P3）
+
+12 个 `src/` 存根（外加 `scripts/sft.py`）按「完成后能做什么」划分，每个优先级是一个可验收的里程碑：
+
+| 优先级 | 判据（完成后能做什么） | 模块 |
+|---|---|---|
+| **P0** | 能训练 + 能生成，demo 最小闭环 | `data/dataset.py`、`data/dataloader.py`、`train/losses.py`、`train/scheduler.py`、`train/metrics.py`、`generate/sampling.py` |
+| **P1** | CLI 可跑 + 有加速数据 | `train/trainer.py`（checkpoint 续训 / 梯度累积 / 混合精度）、`generate/kv_cache.py`、`scripts/train.py`、`scripts/generate.py` |
+| **P2** | Alpaca 微调可跑 + 结果可复现 | `finetune/sft.py`、`scripts/sft.py`、`utils/seed.py`、`utils/logging.py` |
+| **P3** | 门面与传播物料 | `utils/viz.py`、`notebooks/`、顶层 API 导出（`from my_llm import GPTModel`）、自实现 BPE |
+
+注意 `scripts/train.py` / `scripts/generate.py` 虽然在 P1，但它们当前是**已存在的占位脚本**
+（`optimizer=None` / `idx=None` 两个 TODO 实参），不是待新建文件——P1 的工作包含把它们接通。
+
 模型侧已确认的不变量（改动后必须仍然成立）：
 - `model/gpt.py:65` `self.out_head.weight = self.tok_emb.weight` —— 同一 `nn.Parameter` 对象；
 - `model/attention.py:120` 掩码用 `torch.finfo(dtype).min`，且填在**缩放之后**的分数上（`:113` 缩放，
@@ -221,8 +260,8 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
   `outputs/` 原先其实没被忽略，OpenAI TF 权重的 475MB 差点混进提交。
   2026-10-02 已把全部同类问题一次拆行修好，并用 `git check-ignore -v` 逐条验证生效
   （目录型模式要拿真实目录测，对不存在的路径 `git check-ignore` 会报 NOT IGNORED，属误报）。
-- 提交前无需手动格式化：pre-commit 会跑 ruff / ruff-format / mypy / detect-secrets，
-  hook 改写文件后**重跑一次提交**即可（第一次失败属正常）。
+- 提交前无需手动格式化（ruff / ruff-format / mypy / detect-secrets 都由 hook 跑），
+  细节见 Commands 段的 ⚠️ 提示。
 
 ## 项目硬约束（v2 重构）
 

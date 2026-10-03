@@ -50,6 +50,7 @@ scripts/            train.py · generate.py · sft.py · download_weights.py
 
 ## 已知状态
 
-- `model/` 四个模块与 `config.py` 已实现；其余模块目前是**类型完整的存根**（`raise NotImplementedError`），
-  按 P0→P3 顺序填充。
-- `tests/` 目录已就位，测试内容待补：`pytest -m slow` 专跑 parity（不联网的日常提交默认跳过）。
+- `model/` 四个模块与 `config.py` 已实现；其余模块目前是**类型完整的存根**（`raise NotImplementedError`）。
+  填充顺序见 `CODEBUDDY.md` 的「存根填充优先级（P0→P3）」一节（判据是「完成后能做什么」）。
+- `tests/` 已有 33 个用例：快测 15 个（`pytest -q`）+ 慢测 18 个（`pytest -m slow`，parity 16 + crossload 2）。
+  慢测默认跳过，不联网；`pytest -m slow` 首次会下载 GPT-2 权重。
