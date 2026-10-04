@@ -1,0 +1,24 @@
+# `make demo` / 端到端冒烟用的运行配置：只跑 1 个 epoch、不存中间快照。
+# 其余字段沿用 configs/train-default.yaml（改一处即可两处生效的做法不做，
+# 显式写全是为了让这份文件能独立读懂）。
+seed: 123
+num_epochs: 1
+batch_size: 2
+eval_freq: 2
+eval_iter: 1
+save_every: 0
+grad_accum_steps: 1
+grad_clip: 1.0
+precision: fp32
+optimizer:
+  lr: 5.0e-4
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+scheduler:
+  warmup_steps: 2
+  min_lr_ratio: 0.0
+data:
+  train_ratio: 0.9
+  max_length: 64
+  stride: 64

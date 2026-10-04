@@ -1,0 +1,30 @@
+# 预训练运行配置（扁平形态：顶层标量 + optimizer/scheduler/data 三个二级段）。
+# 对应 `my_llm.train.config.TrainConfig`，与架构配置 `configs/gpt2-*.yaml` 是两份不同的文件。
+#
+# 默认值来源（v1 实测值，不是拍脑袋）：
+#   lr / weight_decay / num_epochs / batch_size  ← v1 `TRAIN:541-546` OTHER_SETTINGS
+#   eval_freq=5 / eval_iter=1                    ← v1 `TRAIN:518-519`
+#   max_length=256 / stride=128                  ← v1 `DATA:122-123` DataLoader 默认值
+#   train_ratio=0.9                              ← v1 `TRAIN:477`（90% 训练 / 10% 验证）
+seed: 123
+num_epochs: 10
+batch_size: 2
+eval_freq: 5
+eval_iter: 1
+save_every: 100
+grad_accum_steps: 1
+grad_clip: 1.0
+# fp32 | fp16 | bf16；只有 fp16 会启用 GradScaler（bf16 指数位与 fp32 同宽，不会下溢）
+precision: fp32
+optimizer:
+  lr: 5.0e-4
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+scheduler:
+  warmup_steps: 10
+  min_lr_ratio: 0.0
+data:
+  train_ratio: 0.9
+  max_length: 256
+  stride: 128
