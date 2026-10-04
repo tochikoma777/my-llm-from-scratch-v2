@@ -6,10 +6,14 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 `v2-work/` 是 v2 重写的工作区；`../v1-reference/`（my-LLM-from-scratch，tochikoma777）是**只读参考**（见下方硬约束 3）。
 
-截至 2026-10-03：HEAD 为 `2b32a3f feat(R3c)`（共 7 次提交，59 个被跟踪文件）。
-已落地的是「工程地基 + 模型内核 + 配置层 + HF 权重加载 + OpenAI TF 权重加载 +
-快测 / parity / crossload **三套件**」，其余模块仍是**类型完整的存根**
-（填充顺序见下方「存根填充优先级（P0→P3）」）。
+截至 2026-10-04：HEAD 为 `9b1ffe5 feat(R4b-trainer)`（共 9 次提交）。
+已落地的是「工程地基 + 模型内核 + 配置层 + HF/OpenAI 权重加载 + **数据层 + 训练工具层 +
+Trainer + 生成层（采样 + KV cache）+ 两个 CLI**」，测试是
+快测 / parity / crossload / kv_cache 四套件。剩余存根 4 个 `src/` 文件（+ `scripts/sft.py`），
+填充顺序见下方「存根填充优先级（P0→P3）」。
+
+> ⚠️ 工作区当前有**未提交**的改动（生成层 + 两个 CLI + `configs/train-*.yaml` +
+> `Makefile` demo 目标 + README），上面的"已落地"是工作区状态而非 HEAD 状态。
 
 **已实现**（可运行）：
 - `src/my_llm/config.py` — `GPTConfig` dataclass，唯一配置来源；`from_yaml` / `gpt2_small()` / `gpt2_tiny()`
@@ -26,16 +30,17 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
   （同样返回未匹配键列表）。tensorflow 惰性导入；`assign` 与 v1 不同——它返回张量而非新
   `nn.Parameter`，调用方 `copy_` 进现有参数（见模块 docstring 第 3 点）
 
-**存根**（函数体 `raise NotImplementedError`，`src/` 下共 12 个文件）：
-`data/dataset.py`、`data/dataloader.py`、`finetune/sft.py`、`generate/sampling.py`、`generate/kv_cache.py`、
-`train/losses.py`、`train/metrics.py`、`train/scheduler.py`、`train/trainer.py`、`utils/seed.py`、
-`utils/logging.py`、`utils/viz.py`
-（`scripts/sft.py` 本体也一样会抛，不计入上面 12 个。）
+**存根**（函数体 `raise NotImplementedError`，`src/` 下共 4 个文件）：
+`finetune/sft.py`、`utils/seed.py`、`utils/logging.py`、`utils/viz.py`
+（`scripts/sft.py` 本体也一样会抛，不计入上面 4 个。）
 
-`tests/` 是**三套件**：`conftest.py` + `test_norm.py` / `test_tying.py` / `test_attention.py` /
-`test_tokenizer.py` / **`test_parity_hf.py`** / **`test_crossload.py`**。快测 15 个用例（`pytest -q` 全绿，~1s），
-parity 慢测 16 个用例（`pytest -m slow -v` 实测 **16 passed，~25s**，首次运行会真实下载 `gpt2` 权重），
-crossload 慢测 2 个用例（双路径交叉验证，实测 **2 passed，~40s**，见 Environment 里 TF 权重的坑）。
+`tests/` 是**四套件**：`conftest.py` + `test_norm.py` / `test_tying.py` / `test_attention.py` /
+`test_tokenizer.py` / `test_data.py` / `test_metrics.py` / `test_scheduler.py` / `test_trainer.py` /
+`test_sampling.py` / **`test_parity_hf.py`** / **`test_crossload.py`** / **`test_kv_cache.py`**。
+快测 61 个用例（`pytest -q` 全绿，~7s），
+parity 慢测 16 个用例（实测 **16 passed，~25s**，首次运行会真实下载 `gpt2` 权重），
+crossload 慢测 2 个用例（双路径交叉验证，实测 **2 passed，~40s**，见 Environment 里 TF 权重的坑），
+kv_cache 慢测 4 个用例（实测 **4 passed**，`pytest -m slow` 总计 **22 passed**）。
 `notebooks/` 只有 `.gitkeep`。
 `configs/` 有 5 份 yaml：`gpt2-small.yaml` / `gpt2-tiny.yaml` / `gpt2-medium.yaml`（架构），
 以及 `sft-alpaca.yaml` / `sft-medium-bf16.yaml`（**嵌套**运行配置，见 Commands 里的坑）。
@@ -82,33 +87,35 @@ make test        # pytest -q，跑 15 个快测（跳过 slow）
 make test-full   # pytest -q -m slow -v，parity + crossload，共 18 个用例，首次会下载 GPT-2 权重
                  # （实测 18 passed / 15 deselected，约 41s；crossload 首次要下 OpenAI TF 权重，见 Environment）
 make check       # lint + test
-make demo        # tiny 配置训练 + 生成（⚠️ 见下方警告，当前跑不通）
+make demo        # tiny 配置训练 1 轮（train-demo.yaml）+ 用 last.pt 生成（实测 ~12s，已跑通）
 make clean       # 清缓存
 
-# scripts/ 下唯一能真跑通的入口（其余都是存根或有 TODO 占位实参）
+# 两个端到端 CLI（generate 不给 --checkpoint 时会拉 HF gpt2 权重）
+python scripts/generate.py --config configs/gpt2-small.yaml --prompt "Every effort moves you"
+python scripts/train.py --config configs/gpt2-tiny.yaml --train-config configs/train-demo.yaml
+
+# 权重下载（唯一会联网的脚本）
 python scripts/download_weights.py --source hf --model gpt2
 python scripts/download_weights.py --source openai --model-size 124M
 #   → OpenAI 权重默认落到 outputs/openai-tf/<model-size>/（硬约束：输出统一 outputs/）
 #   → 脚本内部已 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")，
 #     所以不必手动加前缀；要换源时自己 export HF_ENDPOINT 覆盖即可
 
-# 自查还剩多少存根（当前 12 个 src/ 文件 + scripts/sft.py）
+# 自查还剩多少存根（当前 4 个 src/ 文件 + scripts/sft.py）
 grep -rl NotImplementedError --include="*.py" src scripts
 ```
 
 > ⚠️ **提交前不要手动格式化**：pre-commit 会跑 ruff / ruff-format / mypy / detect-secrets。
 > hook 改写文件后**重跑一次提交**即可，**第一次提交失败是正常的**，不要 `git commit --no-verify`。
 
-> ⚠️ **`make demo` / `scripts/*.py` 目前无法端到端跑通**，缺口按优先级拆开看：
-> - `scripts/generate.py:18` 直接 import `generate/sampling.py`（**P0**）；
-> - `scripts/train.py:19` 直接 import `train/trainer.py`（**P1**），而 `Trainer.train()` 内部
->   要吃 `data/dataloader.py`（**P0**）产的 loader——现在两处都还是 `None` 占位
->   （`scripts/train.py:55,58`）。
-> 所以 `make demo` 要等 **P0 + P1 都完成**才是真闭环，不是只补 P0。
-> 实测 `python scripts/train.py --config configs/gpt2-tiny.yaml` 抛 `NotImplementedError`（`train/trainer.py:147`）。
-> 另外 `scripts/train.py:55`（`optimizer=None`）与 `scripts/generate.py:54`（`idx=None`）是标了 `TODO` 的占位实参，
-> 靠 `# type: ignore` 过 mypy，不是已接通的逻辑。
-> 当前可运行的端到端路径只有两条：模型前向
+> ℹ️ **`make demo` 已跑通**（`scripts/train.py` + `scripts/generate.py` 都已接通）。
+> 两条 CLI 的形态：
+> - `scripts/train.py --config <架构yaml> [--train-config <运行yaml>] [--epochs/--batch-size/--lr/--seed 覆盖]`
+>   训练超参**只能**来自 `configs/train-*.yaml`；四个覆盖 flag 默认 `None`，`None` 时回落 yaml；
+> - `scripts/generate.py --config <架构yaml> --prompt "..."`；不给 `--checkpoint` 时拉 HF `gpt2` 权重。
+> 语料默认 `data/raw/the-verdict.txt`（`data/raw/` 已被 gitignore，本地自备即可）。
+>
+> 可运行的端到端路径：模型前向
 > `GPTModel(GPTConfig.gpt2_tiny())(torch.zeros(2, 16, dtype=torch.long))` → `[2, 16, 50257]`，
 > 以及「HF 权重加载 + parity」（`pytest -m slow -v`，见下）。
 
@@ -219,6 +226,14 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 | `finetune/` | Alpaca SFT | `module_fine_tuning.py` |
 | `utils/` | `seed.py` / `logging.py` / `viz.py` | v1 无对应 |
 
+**`generate/kv_cache.py` 刻意不改 `model/`**：KV cache 需要"只算新 token、复用历史 K/V"，
+而 `model/attention.py` 的 `forward(x)` 只吃一个参数、没有 cache 接口。给 `model/` 加
+`use_cache` 会触发 CONTRIBUTING 硬规则 4（改 `model/` 必须同步 parity），风险远大于收益。
+现在的做法是**实例级旁路**：预填充时用 `W_key` / `W_value` 的 forward hook 捕获 K/V
+（拿到的是模块真实输出，不重算），解码时把每层 `att.forward` 换成 cache 版、
+把 `pos_emb` 换成"当前绝对位置那一段"的 hook，`finally` 里 `del att.forward` 还原。
+实测两条路径输出**逐 token 完全一致**，CPU 上加速 ~2.4x（数字见 README）。
+
 **`weights/` 是并列的两条 loader**，共享同一套键名约定（QKV 切分顺序、Conv1D 转置、g-b 后缀）：
 `hf.py` 是主力（parity 取数入口），`openai_tf.py` 是 v1 资产（TF→PT 兼容层）。
 **任一边改键名映射，都必须同步 `tests/test_crossload.py`**——CONTRIBUTING 硬规则 4 只写了
@@ -228,15 +243,15 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 
 12 个 `src/` 存根（外加 `scripts/sft.py`）按「完成后能做什么」划分，每个优先级是一个可验收的里程碑：
 
-| 优先级 | 判据（完成后能做什么） | 模块 |
-|---|---|---|
-| **P0** | 能训练 + 能生成，demo 最小闭环 | `data/dataset.py`、`data/dataloader.py`、`train/losses.py`、`train/scheduler.py`、`train/metrics.py`、`generate/sampling.py` |
-| **P1** | CLI 可跑 + 有加速数据 | `train/trainer.py`（checkpoint 续训 / 梯度累积 / 混合精度）、`generate/kv_cache.py`、`scripts/train.py`、`scripts/generate.py` |
-| **P2** | Alpaca 微调可跑 + 结果可复现 | `finetune/sft.py`、`scripts/sft.py`、`utils/seed.py`、`utils/logging.py` |
-| **P3** | 门面与传播物料 | `utils/viz.py`、`notebooks/`、顶层 API 导出（`from my_llm import GPTModel`）、自实现 BPE |
+| 优先级 | 判据（完成后能做什么） | 模块 | 状态 |
+|---|---|---|---|
+| **P0** | 能训练 + 能生成，demo 最小闭环 | `data/dataset.py`、`data/dataloader.py`、`train/losses.py`、`train/scheduler.py`、`train/metrics.py`、`generate/sampling.py` | ✅ 已完成 |
+| **P1** | CLI 可跑 + 有加速数据 | `train/trainer.py`（checkpoint 续训 / 梯度累积 / 混合精度）、`generate/kv_cache.py`、`scripts/train.py`、`scripts/generate.py` | ✅ 已完成（`make demo` 实测跑通） |
+| **P2** | Alpaca 微调可跑 + 结果可复现 | `finetune/sft.py`、`scripts/sft.py`、`utils/seed.py`、`utils/logging.py` | ⏳ 未开始 |
+| **P3** | 门面与传播物料 | `utils/viz.py`、`notebooks/`、顶层 API 导出（`from my_llm import GPTModel`）、自实现 BPE | ⏳ 未开始 |
 
-注意 `scripts/train.py` / `scripts/generate.py` 虽然在 P1，但它们当前是**已存在的占位脚本**
-（`optimizer=None` / `idx=None` 两个 TODO 实参），不是待新建文件——P1 的工作包含把它们接通。
+注意 `scripts/train.py` / `scripts/generate.py` 在 P1，且它们原本就是**已存在的占位脚本**
+（`optimizer=None` / `idx=None` 两个 TODO 实参），P1 的工作包含把它们接通。
 
 模型侧已确认的不变量（改动后必须仍然成立）：
 - `model/gpt.py:65` `self.out_head.weight = self.tok_emb.weight` —— 同一 `nn.Parameter` 对象；

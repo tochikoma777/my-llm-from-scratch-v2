@@ -50,7 +50,38 @@ scripts/            train.py · generate.py · sft.py · download_weights.py
 
 ## 已知状态
 
-- `model/` 四个模块与 `config.py` 已实现；其余模块目前是**类型完整的存根**（`raise NotImplementedError`）。
-  填充顺序见 `CODEBUDDY.md` 的「存根填充优先级（P0→P3）」一节（判据是「完成后能做什么」）。
-- `tests/` 已有 33 个用例：快测 15 个（`pytest -q`）+ 慢测 18 个（`pytest -m slow`，parity 16 + crossload 2）。
-  慢测默认跳过，不联网；`pytest -m slow` 首次会下载 GPT-2 权重。
+- 已实现：`config.py` + `model/` + `weights/`（HF 与 OpenAI TF 两条路径）+ `data/` +
+  `train/`（loss / metrics / scheduler / Trainer）+ `generate/`（采样 + KV cache）。
+  仍是存根的模块见 `CODEBUDDY.md` 的「存根填充优先级（P0→P3）」一节。
+- `tests/` 已有 83 个用例：快测 61 个（`pytest -q`）+ 慢测 22 个
+  （`pytest -m slow`，parity 16 + crossload 2 + KV cache 4）。慢测默认跳过；
+  `pytest -m slow` 首次会下载 GPT-2 权重。
+
+## KV cache 加速
+
+实测（本机 CPU，tiny 配置 `emb_dim=128 / n_layers=2`，prompt 16 token，生成 60 token，贪婪解码）：
+
+| 路径 | 耗时 | 倍数 |
+|---|---|---|
+| 无 cache（`generate`） | 0.349s | 1.00x |
+| 有 cache（`generate_with_cache`） | 0.147s | **2.38x** |
+
+数字由 `tests/test_kv_cache.py::test_cache_speedup_is_measured` 打印（只打印不断言阈值，
+不同机器上会浮动）。两条路径的输出**逐 token 完全一致**，断言见
+`tests/test_kv_cache.py::test_cache_matches_plain_generation`。
+
+实现方式：KV cache **没有**改动 `model/` 下任何代码（那会触发「改 `model/` 必须同步 parity」）。
+K/V 由 `W_key` / `W_value` 的 forward hook 捕获，解码时把每层 `attention.forward` 换成
+实例级旁路、把位置嵌入换成"当前绝对位置那一段"的 hook，用完即还原。
+
+## Quick start（端到端）
+
+```bash
+python scripts/generate.py --config configs/gpt2-small.yaml --prompt "Every effort moves you"
+python scripts/train.py --config configs/gpt2-tiny.yaml --train-config configs/train-demo.yaml
+make demo            # = 上面第二条 + 用训完的 checkpoint 生成
+```
+
+`--epochs / --batch-size / --lr / --seed` 是**可选覆盖**（默认 `None`），
+`None` 时回落到 `--train-config` 指定的 yaml（默认 `configs/train-default.yaml`）。
+训练超参与架构配置是两份文件：`configs/gpt2-*.yaml`（架构）+ `configs/train-*.yaml`（运行）。
