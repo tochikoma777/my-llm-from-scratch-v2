@@ -41,6 +41,11 @@ make check       # lint + test，提 PR 前必须绿
 
 ## 提交与 PR
 
-- `pre-commit` 会跑 ruff / mypy / detect-secrets；不要 `git commit --no-verify`。
-- 不要把权重、数据集、loss 曲线 PDF 提交到仓库（`.gitignore` 已覆盖；`detect-secrets` 会拦 credentials）。
+- `pre-commit` 会跑 ruff check --fix / ruff format / mypy（`repo: local` + `language: system`，
+  用的是本机已装的 ruff / mypy）；不要 `git commit --no-verify`。
+  hook 改写文件后重跑一次提交即可，第一次提交失败是正常的。
+- **detect-secrets 当前未启用**（本机未安装 detect-secrets，改 local 模式后 hook 必然失败）。
+  需要密钥扫描时先 `pip install detect-secrets`，再把 `.pre-commit-config.yaml` 注释里
+  那段 hook 配置加回来。当前配置见 `.pre-commit-config.yaml`。
+- 不要把权重、数据集、loss 曲线 PDF 提交到仓库（`.gitignore` 已覆盖）。
 - PR 描述里写清：改了什么、是否影响数值、parity 是否通过。
