@@ -37,6 +37,9 @@ from my_llm.train.metrics import evaluate_model, loss_to_perplexity
 
 logger = logging.getLogger(__name__)
 
+# precision → autocast 的 dtype；fp32 不启用 autocast，故不在表里
+_AUTOCAST_DTYPE: dict[str, torch.dtype] = {"fp16": torch.float16, "bf16": torch.bfloat16}
+
 
 @dataclass
 class TrainerConfig:
@@ -48,7 +51,9 @@ class TrainerConfig:
         eval_iter: 每次评估跑多少批（v1 `TRAIN:519`）。
         grad_accum_steps: 梯度累积步数，1 表示禁用。
         grad_clip_norm: 梯度裁剪阈值，<=0 表示禁用。
-        amp: 是否启用自动混合精度（仅 CUDA 生效）。
+        precision: `"fp32" | "fp16" | "bf16"`；非 fp32 且设备为 CUDA 时开 `torch.autocast`。
+            **只有 fp16 配 GradScaler**：bf16 的指数位与 fp32 同宽，不会下溢，
+            scaling 不仅无用还会让梯度被无谓缩放（见 `train_epoch` 注释）。
         start_context: 每轮结束后用于采样演示的 prompt。
         checkpoint_dir: checkpoint 落盘目录，默认 `outputs/checkpoints`。
         save_every: 每隔多少步保存一次；0 表示只在每轮结束保存。
@@ -60,7 +65,7 @@ class TrainerConfig:
     eval_iter: int = 1
     grad_accum_steps: int = 1
     grad_clip_norm: float = 1.0
-    amp: bool = False
+    precision: str = "fp32"
     start_context: str = "Every effort moves you"
     checkpoint_dir: Path = field(default_factory=lambda: Path("outputs/checkpoints"))
     save_every: int = 0
@@ -233,8 +238,15 @@ class Trainer:
         """
         history = TrainHistory()
         dev = torch.device(device)
-        amp_enabled = self.cfg.amp and dev.type == "cuda"
-        scaler = grad_scaler.GradScaler(dev.type, enabled=amp_enabled)
+        autocast_dtype = _AUTOCAST_DTYPE.get(self.cfg.precision)
+        if autocast_dtype is None and self.cfg.precision != "fp32":
+            msg = f"precision 只支持 fp32/fp16/bf16，收到 {self.cfg.precision}"
+            raise ValueError(msg)
+        amp_enabled = autocast_dtype is not None and dev.type == "cuda"
+        # 只有 fp16 需要 GradScaler：bf16 指数位与 fp32 同宽、不会下溢，
+        # 对它做 scaling 不仅无收益，还会让梯度被无谓放大/缩小。
+        use_scaler = amp_enabled and self.cfg.precision == "fp16"
+        scaler = grad_scaler.GradScaler(dev.type, enabled=use_scaler)
         accum = max(1, self.cfg.grad_accum_steps)
         num_batches = len(train_loader)
 
@@ -243,19 +255,24 @@ class Trainer:
             self.global_step += 1
             self.tokens_seen += input_batch.numel()
 
-            with torch.autocast(device_type=dev.type, enabled=amp_enabled):
+            with torch.autocast(device_type=dev.type, dtype=autocast_dtype, enabled=amp_enabled):
                 loss = calc_loss_batch(input_batch, target_batch, self.model, dev)
+            scaled_loss = scaler.scale(loss / accum) if use_scaler else loss / accum
             # 用 torch.autograd.backward 而不是 Tensor.backward：后者在 torch 的类型存根里
             # 没有注解，mypy --strict 会报 no-untyped-call；两者对标量损失等价。
-            torch.autograd.backward(scaler.scale(loss / accum))
+            torch.autograd.backward(scaled_loss)
 
             is_boundary = (batch_idx + 1) % accum == 0 or (batch_idx + 1) == num_batches
             if is_boundary:
                 if self.cfg.grad_clip_norm > 0:
-                    scaler.unscale_(self.optimizer)
+                    if use_scaler:
+                        scaler.unscale_(self.optimizer)
                     nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
-                scaler.step(self.optimizer)
-                scaler.update()
+                if use_scaler:
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                else:
+                    self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
                 if self.scheduler is not None:
                     self.scheduler.step()

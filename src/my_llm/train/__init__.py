@@ -10,6 +10,10 @@
 | perplexity | 无（只有交叉熵） | `metrics.py` |
 """
 
+from my_llm.train.config import DataConfig as DataConfig
+from my_llm.train.config import OptimizerConfig as OptimizerConfig
+from my_llm.train.config import SchedulerConfig as SchedulerConfig
+from my_llm.train.config import TrainConfig as TrainConfig
 from my_llm.train.losses import calc_loss_batch as calc_loss_batch
 from my_llm.train.losses import calc_loss_loader as calc_loss_loader
 from my_llm.train.metrics import evaluate_model as evaluate_model
@@ -26,6 +30,10 @@ from my_llm.train.trainer import load_checkpoint as load_checkpoint
 from my_llm.train.trainer import save_checkpoint as save_checkpoint
 
 __all__ = [
+    "DataConfig",
+    "OptimizerConfig",
+    "SchedulerConfig",
+    "TrainConfig",
     "TrainHistory",
     "Trainer",
     "TrainerConfig",
