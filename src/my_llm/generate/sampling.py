@@ -31,7 +31,9 @@ def apply_temperature(logits: torch.Tensor, temperature: float) -> torch.Tensor:
     Returns:
         缩放后的 logits。
     """
-    raise NotImplementedError
+    if temperature <= 0 or temperature == 1.0:
+        return logits
+    return logits / temperature
 
 
 def apply_top_k(logits: torch.Tensor, top_k: int | None) -> torch.Tensor:
@@ -44,7 +46,13 @@ def apply_top_k(logits: torch.Tensor, top_k: int | None) -> torch.Tensor:
     Returns:
         掩码后的 logits。
     """
-    raise NotImplementedError
+    if top_k is None or top_k <= 0:
+        return logits
+    vocab_size = logits.shape[-1]
+    k = min(top_k, vocab_size)
+    # v1 `LOAD:408-418`：取第 k 大的值作为阈值，其余置 -inf（保留并列第 k 名的全部）
+    threshold = torch.topk(logits, k, dim=-1).values[..., -1:]
+    return logits.masked_fill(logits < threshold, torch.finfo(logits.dtype).min)
 
 
 def apply_top_p(logits: torch.Tensor, top_p: float | None) -> torch.Tensor:
@@ -57,7 +65,16 @@ def apply_top_p(logits: torch.Tensor, top_p: float | None) -> torch.Tensor:
     Returns:
         掩码后的 logits。
     """
-    raise NotImplementedError
+    if top_p is None or top_p >= 1.0:
+        return logits
+    probs = torch.softmax(logits, dim=-1)
+    # 降序累积概率；保留"累积首次达到 top_p"之前的所有候选（含越线的那一个）
+    sorted_probs, sorted_idx = torch.sort(probs, dim=-1, descending=True)
+    cumulative = torch.cumsum(sorted_probs, dim=-1)
+    keep_sorted = cumulative - sorted_probs < top_p
+    keep = torch.zeros_like(keep_sorted)
+    keep.scatter_(-1, sorted_idx, keep_sorted)
+    return logits.masked_fill(~keep, torch.finfo(logits.dtype).min)
 
 
 def sample_next_token(
@@ -79,7 +96,14 @@ def sample_next_token(
     Returns:
         形状 `(batch, 1)` 的 token ID。
     """
-    raise NotImplementedError
+    last = logits[:, -1, :] if logits.dim() == 3 else logits
+    if temperature <= 0:
+        return torch.argmax(last, dim=-1, keepdim=True)
+    scaled = apply_temperature(last, temperature)
+    masked = apply_top_k(scaled, top_k)
+    masked = apply_top_p(masked, top_p)
+    probs = torch.softmax(masked, dim=-1)
+    return torch.multinomial(probs, num_samples=1, generator=generator)
 
 
 def generate(
@@ -109,4 +133,29 @@ def generate(
     Returns:
         拼接后的完整序列，形状 `(batch, seq_len + generated)`。
     """
-    raise NotImplementedError
+    finished = torch.zeros(idx.shape[0], dtype=torch.bool, device=idx.device)
+    eos = torch.tensor([eos_id], dtype=idx.dtype, device=idx.device) if eos_id is not None else None
+
+    for _ in range(max_new_tokens):
+        # 位置编码只认 context_size 行，超出的部分必须截掉（v1 `LOAD:398` 同）
+        idx_cond = idx[:, -context_size:]
+        with torch.no_grad():
+            logits = model(idx_cond)
+        next_token = sample_next_token(
+            logits,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            generator=generator,
+        ).to(idx.dtype)
+
+        if eos is not None:
+            # per-sample 停止：已结束的样本继续填 eos，其余照常生成
+            next_token = torch.where(finished.unsqueeze(1), eos.expand_as(next_token), next_token)
+            finished = finished | (next_token.squeeze(1) == eos_id)
+            idx = torch.cat((idx, next_token), dim=1)
+            if bool(finished.all()):
+                break
+        else:
+            idx = torch.cat((idx, next_token), dim=1)
+    return idx
