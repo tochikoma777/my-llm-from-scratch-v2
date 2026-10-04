@@ -8,6 +8,7 @@ from __future__ import annotations
 import torch
 from torch.utils.data import DataLoader
 
+from my_llm.data.dataset import GPTDatasetV1
 from my_llm.tokenizer.protocol import Tokenizer
 
 
@@ -34,6 +35,13 @@ def create_dataloader_v1(
         num_workers: 数据加载进程数。
 
     Returns:
-        产出 `(inputs, targets)` 的 DataLoader。
+        产出 `(inputs, targets)` 的 DataLoader，两个张量形状均为 `(batch_size, max_length)`。
     """
-    raise NotImplementedError
+    dataset = GPTDatasetV1(txt, tokenizer, max_length, stride)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        drop_last=drop_last,
+        num_workers=num_workers,
+    )

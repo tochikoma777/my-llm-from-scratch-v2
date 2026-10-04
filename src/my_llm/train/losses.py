@@ -35,7 +35,10 @@ def calc_loss_batch(
     Returns:
         标量损失。
     """
-    raise NotImplementedError
+    input_batch = input_batch.to(device)
+    target_batch = target_batch.to(device)
+    logits = model(input_batch)
+    return nn.functional.cross_entropy(logits.flatten(0, 1), target_batch.flatten())
 
 
 def calc_loss_loader(
@@ -55,4 +58,14 @@ def calc_loss_loader(
     Returns:
         平均损失；空 loader 返回 `nan`。
     """
-    raise NotImplementedError
+    if len(data_loader) == 0:
+        return float("nan")
+    # 上限取实际可用批次数，避免传入过大值时整轮跑完还不退出（v1 `TRAIN:158`）
+    num_batches = len(data_loader) if num_batches is None else min(num_batches, len(data_loader))
+
+    total_loss = 0.0
+    for i, (input_batch, target_batch) in enumerate(data_loader):
+        if i >= num_batches:
+            break
+        total_loss += calc_loss_batch(input_batch, target_batch, model, device).item()
+    return total_loss / num_batches

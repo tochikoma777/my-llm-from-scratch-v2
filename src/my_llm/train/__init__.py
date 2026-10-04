@@ -12,10 +12,13 @@
 
 from my_llm.train.losses import calc_loss_batch as calc_loss_batch
 from my_llm.train.losses import calc_loss_loader as calc_loss_loader
+from my_llm.train.metrics import evaluate_model as evaluate_model
+from my_llm.train.metrics import evaluate_perplexity as evaluate_perplexity
 from my_llm.train.metrics import loss_to_perplexity as loss_to_perplexity
 from my_llm.train.scheduler import (
     get_cosine_schedule_with_warmup as get_cosine_schedule_with_warmup,
 )
+from my_llm.train.scheduler import warmup_cosine_lr as warmup_cosine_lr
 from my_llm.train.trainer import Trainer as Trainer
 from my_llm.train.trainer import load_checkpoint as load_checkpoint
 from my_llm.train.trainer import save_checkpoint as save_checkpoint
@@ -24,8 +27,11 @@ __all__ = [
     "Trainer",
     "calc_loss_batch",
     "calc_loss_loader",
+    "evaluate_model",
+    "evaluate_perplexity",
     "get_cosine_schedule_with_warmup",
     "load_checkpoint",
     "loss_to_perplexity",
     "save_checkpoint",
+    "warmup_cosine_lr",
 ]
