@@ -9,5 +9,6 @@ v1 直接使用 `tiktoken.get_encoding("gpt2")`（`DATA:154`、`TRAIN:507`、`LO
 
 from my_llm.tokenizer.protocol import Tokenizer as Tokenizer
 from my_llm.tokenizer.tiktoken_impl import TiktokenTokenizer as TiktokenTokenizer
+from my_llm.tokenizer.tiktoken_impl import build_tokenizer as build_tokenizer
 
-__all__ = ["TiktokenTokenizer", "Tokenizer"]
+__all__ = ["TiktokenTokenizer", "Tokenizer", "build_tokenizer"]
