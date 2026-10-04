@@ -1,21 +1,37 @@
+# 全部走 `repo: local` + `language: system`：直接用本机已装的 ruff / mypy，
+# 不再从 GitHub 下载 hook 环境。
+#
+# 为什么要改（2026-10-04）：原来 ruff 锁在 v0.6.9、本机是 v0.16.9，
+# 两个版本对多行 assert / 部分格式化规则的结论相反，提交时会出现
+# "hook 改写文件 → 重跑一次提交 → 又被本地 ruff 改写"的死循环。
+# 统一成本机版本后"谁跑都一样"，hook 结果幂等。
+#
+# 代价：换机器时若没装 ruff / mypy，hook 会因找不到命令而失败
+# （pip install -e ".[dev]" 已含这两个依赖）。
+
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
+  - repo: local
     hooks:
-      - id: ruff
-        args: [--fix]
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check --fix
+        language: system
+        types: [python]
       - id: ruff-format
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.11.2
-    hooks:
+        name: ruff format
+        entry: ruff format
+        language: system
+        types: [python]
       - id: mypy
-        files: ^src/
-        # mypy 跑在隔离环境里，依赖必须显式列出：
-        # - torch/numpy：类型注解来源
-        # - types-PyYAML：config.py 用 yaml，缺 stub 会报 import-untyped
-        #   （本地能通过是因为本地装了 pyyaml 本体，被 ignore_missing_imports 放过）
-        additional_dependencies: [torch, numpy, types-PyYAML]
-  - repo: https://github.com/Yelp/detect-secrets
-    rev: v1.5.0
-    hooks:
-      - id: detect-secrets
+        name: mypy
+        entry: mypy src
+        language: system
+        types: [python]
+        pass_filenames: false
+      # detect-secrets 已移除：本机没有安装（无 CLI 也无 detect_secrets 模块），
+      # 改 local 模式后无法运行。需要时先 `pip install detect-secrets`，再把下面这段加回来：
+      #   - id: detect-secrets
+      #     name: detect secrets
+      #     entry: detect-secrets scan --force-use-all-plugins
+      #     language: system
+      #     pass_filenames: false

@@ -54,11 +54,14 @@ kv_cache 慢测 4 个用例（实测 **4 passed**，`pytest -m slow` 总计 **22
 - `transformers` 已装（仅 parity 用），pyproject 里锁 `>=5.12,<6`：parity 断言依赖 `GPTConfig()` 默认值与
   `NewGELUActivation` 实现，6.x 一改整套 parity 失效，不要放宽上界。
 - `tensorflow` **未装**——它只是 `weights/openai_tf.py` 的可选依赖，不要把它加回主依赖。
-- 网络：PyPI 走 tuna 镜像可通；**github.com 不可达**。因此
+- 网络：PyPI 走 tuna 镜像可通；**github.com 可能不可达**。因此
   - `pre-commit` 无法拉取新的 hook 版本（`rev` 改不动，改了会卡死在初始化）；
   - parity 测试下载 HF 权重依赖镜像源，不要删掉两处设置：`Makefile:3` 的
     `export HF_ENDPOINT ?= https://hf-mirror.com`（覆盖 `make` 目标），以及
     `scripts/download_weights.py:24` 的 `os.environ.setdefault(...)`（直接 `python scripts/...` 时的兜底）。
+  - 实测：2026-10-04 `gh` CLI（api.github.com）与 `git push`（github.com HTTPS）均可用，
+    首次推送成功。但不保证稳定，失败时按上面的警告处理。
+    `pre-commit` 改 local 模式后不再依赖 GitHub 拉 hook。
 - HF 缓存不在默认位置：本机 `HF_HOME=/data/cache/huggingface`（不是 `~/.cache/huggingface`），
   排查「到底下没下权重」时别找错目录。`gpt2` 权重约 548MB，本机已缓存，
   所以 `pytest -m slow` 现在不用联网就能跑完。
