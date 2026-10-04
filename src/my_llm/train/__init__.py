@@ -20,11 +20,15 @@ from my_llm.train.scheduler import (
 )
 from my_llm.train.scheduler import warmup_cosine_lr as warmup_cosine_lr
 from my_llm.train.trainer import Trainer as Trainer
+from my_llm.train.trainer import TrainerConfig as TrainerConfig
+from my_llm.train.trainer import TrainHistory as TrainHistory
 from my_llm.train.trainer import load_checkpoint as load_checkpoint
 from my_llm.train.trainer import save_checkpoint as save_checkpoint
 
 __all__ = [
+    "TrainHistory",
     "Trainer",
+    "TrainerConfig",
     "calc_loss_batch",
     "calc_loss_loader",
     "evaluate_model",

@@ -12,19 +12,30 @@
 
 同时保留 v1 的观察手段：`eval_freq` 定期评估 + 每轮结束用固定 prompt 采样看生成质量
 （`TRAIN:336-356`），这在调早期模型时比纯 loss 更有信息量。
+
+**依赖存根的处理**（三个模块尚未落地，这里刻意不 import 它们）：
+- `generate/sampling.py`（P0）→ 采样通过可选回调 `sample_fn` 注入，不注入就不采样；
+- `utils/seed.py`（P2）→ 直接用 `torch.manual_seed`，等它落地后替换；
+- `utils/logging.py`（P2）→ 用标准库 `logging`，不 `print`。
 """
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn as nn
+from torch.amp import grad_scaler
 from torch.utils.data import DataLoader
 
-from my_llm.train.losses import DeviceLike
+from my_llm.train.losses import DeviceLike, calc_loss_batch
+from my_llm.train.metrics import evaluate_model, loss_to_perplexity
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -73,6 +84,20 @@ class TrainHistory:
     perplexities: list[float] = field(default_factory=list)
     tokens_seen: list[int] = field(default_factory=list)
     global_steps: list[int] = field(default_factory=list)
+    samples: list[str] = field(default_factory=list)
+
+    def extend(self, other: TrainHistory) -> None:
+        """把另一个 `TrainHistory` 的记录追加到本对象末尾。
+
+        Args:
+            other: 通常是单个 epoch 的记录。
+        """
+        self.train_losses.extend(other.train_losses)
+        self.val_losses.extend(other.val_losses)
+        self.perplexities.extend(other.perplexities)
+        self.tokens_seen.extend(other.tokens_seen)
+        self.global_steps.extend(other.global_steps)
+        self.samples.extend(other.samples)
 
 
 def save_checkpoint(
@@ -93,7 +118,17 @@ def save_checkpoint(
         path: 目标文件路径；父目录会自动创建。
         **extra: 额外要写入 checkpoint 的可 pickle 对象（如 epoch、config）。
     """
-    raise NotImplementedError
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "step": step,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+    }
+    if scheduler is not None:
+        payload["scheduler"] = scheduler.state_dict()
+    payload.update(extra)
+    torch.save(payload, path)
 
 
 def load_checkpoint(
@@ -115,8 +150,23 @@ def load_checkpoint(
 
     Raises:
         FileNotFoundError: checkpoint 不存在。
+
+    Note:
+        `load_state_dict` 是**就地 `copy_`**，不会替换 `nn.Parameter` 对象，
+        因此 weight tying（`out_head.weight is tok_emb.weight`）不会被打断（硬约束 1）。
+        读盘用 `weights_only=True`：checkpoint 只含张量与内置容器，
+        没必要为它开 pickle 反序列化任意对象的口子。
     """
-    raise NotImplementedError
+    path = Path(path)
+    if not path.is_file():
+        msg = f"checkpoint 不存在: {path}"
+        raise FileNotFoundError(msg)
+    ckpt = torch.load(path, map_location="cpu", weights_only=True)
+    model.load_state_dict(ckpt["model"])
+    optimizer.load_state_dict(ckpt["optimizer"])
+    if scheduler is not None and "scheduler" in ckpt:
+        scheduler.load_state_dict(ckpt["scheduler"])
+    return int(ckpt["step"])
 
 
 class Trainer:
@@ -127,6 +177,9 @@ class Trainer:
         optimizer: 优化器。
         scheduler: 学习率调度器，可为 None（固定 lr）。
         cfg: 运行参数。
+        sample_fn: 可选的采样回调，签名 `(model, prompt) -> str`。
+        global_step: 已处理的**微批次**数（与 v1 `TRAIN:322` 同义）。
+        tokens_seen: 累计见过的 token 数。
     """
 
     def __init__(
@@ -135,6 +188,7 @@ class Trainer:
         optimizer: torch.optim.Optimizer,
         cfg: TrainerConfig,
         scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+        sample_fn: Callable[[nn.Module, str], str] | None = None,
     ) -> None:
         """初始化 Trainer。
 
@@ -143,8 +197,16 @@ class Trainer:
             optimizer: 优化器。
             cfg: 运行参数。
             scheduler: 调度器。
+            sample_fn: 每轮结束后用于采样演示文本的回调；为 `None` 则不采样。
+                `generate/sampling.py` 落地后由调用方传入，这里刻意不 import 它。
         """
-        raise NotImplementedError
+        self.model = model
+        self.optimizer = optimizer
+        self.cfg = cfg
+        self.scheduler = scheduler
+        self.sample_fn = sample_fn
+        self.global_step = 0
+        self.tokens_seen = 0
 
     def train_epoch(
         self,
@@ -163,8 +225,93 @@ class Trainer:
 
         Returns:
             本轮的记录。
+
+        Note:
+            两个"步"的口径不同，别混：`global_step` 数的是**微批次**（沿用 v1，
+            `eval_freq` 按它触发），而 `optimizer.step()` / `scheduler.step()` 每
+            `grad_accum_steps` 个微批次才走一次（`global_step` 之外单独计数）。
         """
-        raise NotImplementedError
+        history = TrainHistory()
+        dev = torch.device(device)
+        amp_enabled = self.cfg.amp and dev.type == "cuda"
+        scaler = grad_scaler.GradScaler(dev.type, enabled=amp_enabled)
+        accum = max(1, self.cfg.grad_accum_steps)
+        num_batches = len(train_loader)
+
+        self.model.train()
+        for batch_idx, (input_batch, target_batch) in enumerate(train_loader):
+            self.global_step += 1
+            self.tokens_seen += input_batch.numel()
+
+            with torch.autocast(device_type=dev.type, enabled=amp_enabled):
+                loss = calc_loss_batch(input_batch, target_batch, self.model, dev)
+            # 用 torch.autograd.backward 而不是 Tensor.backward：后者在 torch 的类型存根里
+            # 没有注解，mypy --strict 会报 no-untyped-call；两者对标量损失等价。
+            torch.autograd.backward(scaler.scale(loss / accum))
+
+            is_boundary = (batch_idx + 1) % accum == 0 or (batch_idx + 1) == num_batches
+            if is_boundary:
+                if self.cfg.grad_clip_norm > 0:
+                    scaler.unscale_(self.optimizer)
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
+                scaler.step(self.optimizer)
+                scaler.update()
+                self.optimizer.zero_grad(set_to_none=True)
+                if self.scheduler is not None:
+                    self.scheduler.step()
+
+            if self.global_step % self.cfg.eval_freq == 0:
+                self._record_eval(history, train_loader, val_loader, dev)
+                if self.cfg.save_every > 0 and self.global_step % self.cfg.save_every == 0:
+                    self._save_step_ckpt()
+
+        if self.sample_fn is not None and self.cfg.start_context:
+            history.samples.append(self._sample())
+        return history
+
+    def _record_eval(
+        self,
+        history: TrainHistory,
+        train_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+        val_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+        device: torch.device,
+    ) -> None:
+        """评估一次并把结果追加进 `history`（v1 `TRAIN:336-356`）。
+
+        Args:
+            history: 目标记录对象。
+            train_loader: 训练 loader。
+            val_loader: 验证 loader。
+            device: 计算设备。
+        """
+        train_loss, val_loss = evaluate_model(
+            self.model, train_loader, val_loader, device, self.cfg.eval_iter
+        )
+        history.train_losses.append(train_loss)
+        history.val_losses.append(val_loss)
+        history.perplexities.append(loss_to_perplexity(val_loss))
+        history.tokens_seen.append(self.tokens_seen)
+        history.global_steps.append(self.global_step)
+        logger.info(
+            "step %d: train loss %.3f, val loss %.3f", self.global_step, train_loss, val_loss
+        )
+
+    def _save_step_ckpt(self) -> None:
+        """按 `save_every` 落一次快照。"""
+        path = self.cfg.checkpoint_dir / f"step-{self.global_step:06d}.pt"
+        save_checkpoint(self.model, self.optimizer, self.scheduler, self.global_step, path)
+
+    def _sample(self) -> str:
+        """用 `sample_fn` 基于 `start_context` 采样一段文本。
+
+        Returns:
+            采样出的文本。
+        """
+        self.model.eval()
+        with torch.no_grad():
+            text = self.sample_fn(self.model, self.cfg.start_context)  # type: ignore[misc]  # 已在上层判空
+        self.model.train()
+        return text
 
     def train(
         self,
@@ -183,5 +330,34 @@ class Trainer:
 
         Returns:
             全部轮次累计的记录。
+
+        Note:
+            种子只在 `train()` 入口设一次（`utils/seed.py` 属 P2，落地后改用它）。
+
+            v1 用 `global_step = -1` 起步（`TRAIN:322`）来让"第 1 个微批次就评估一次"，
+            代价是计数比实际批次数少 1、续训时容易算错。这里改成 `global_step` 就是
+            **已处理的微批次数**，基线评估在训练前显式做一次，效果相同但计数自洽。
         """
-        raise NotImplementedError
+        torch.manual_seed(self.cfg.seed)
+        history = TrainHistory()
+        if resume_from is not None:
+            self.global_step = load_checkpoint(
+                self.model, self.optimizer, self.scheduler, resume_from
+            )
+            logger.info("从 %s 续训，global_step=%d", resume_from, self.global_step)
+        else:
+            self.global_step = 0
+            self._record_eval(history, train_loader, val_loader, torch.device(device))
+        for epoch in range(self.cfg.num_epochs):
+            logger.info("epoch %d/%d 开始", epoch + 1, self.cfg.num_epochs)
+            epoch_history = self.train_epoch(train_loader, val_loader, device, epoch)
+            history.extend(epoch_history)
+            save_checkpoint(
+                self.model,
+                self.optimizer,
+                self.scheduler,
+                self.global_step,
+                self.cfg.checkpoint_dir / "last.pt",
+                epoch=epoch,
+            )
+        return history
