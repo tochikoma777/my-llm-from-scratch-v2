@@ -6,14 +6,13 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 `v2-work/` 是 v2 重写的工作区；`../v1-reference/`（my-LLM-from-scratch，tochikoma777）是**只读参考**（见下方硬约束 3）。
 
-截至 2026-10-04：HEAD 为 `9b1ffe5 feat(R4b-trainer)`（共 9 次提交）。
-已落地的是「工程地基 + 模型内核 + 配置层 + HF/OpenAI 权重加载 + **数据层 + 训练工具层 +
-Trainer + 生成层（采样 + KV cache）+ 两个 CLI**」，测试是
-快测 / parity / crossload / kv_cache 四套件。剩余存根 4 个 `src/` 文件（+ `scripts/sft.py`），
-填充顺序见下方「存根填充优先级（P0→P3）」。
-
-> ⚠️ 工作区当前有**未提交**的改动（生成层 + 两个 CLI + `configs/train-*.yaml` +
-> `Makefile` demo 目标 + README），上面的"已落地"是工作区状态而非 HEAD 状态。
+截至 2026-10-05：HEAD 为 `859bda2 chore: use local pre-commit hooks to end ruff version conflict`
+（共 12 次提交），**工作区干净**（之前的生成层 / 两个 CLI / `configs/train-*.yaml` /
+`Makefile` demo 目标已随 `c90dab8`→`b3c7475`→`859bda2` 提交完毕）。
+已落地的是「工程地基 + 模型内核 + 配置层（架构 + 运行两份）+ HF/OpenAI 权重加载 +
+**数据层 + 训练工具层 + Trainer + 生成层（采样 + KV cache）+ 两个 CLI**」，测试是
+快测 / parity / crossload / kv_cache 四套件（实测 `61 passed, 22 deselected`）。
+剩余存根 4 个 `src/` 文件（+ `scripts/sft.py`），填充顺序见下方「存根填充优先级（P0→P3）」。
 
 **已实现**（可运行）：
 - `src/my_llm/config.py` — `GPTConfig` dataclass，唯一配置来源；`from_yaml` / `gpt2_small()` / `gpt2_tiny()`
@@ -29,6 +28,17 @@ Trainer + 生成层（采样 + KV cache）+ 两个 CLI**」，测试是
   `download_and_load_gpt2`、`load_gpt2_params_from_tf_ckpt`、`load_openai_tf_weights_into_gpt`
   （同样返回未匹配键列表）。tensorflow 惰性导入；`assign` 与 v1 不同——它返回张量而非新
   `nn.Parameter`，调用方 `copy_` 进现有参数（见模块 docstring 第 3 点）
+- `src/my_llm/train/config.py` — `TrainConfig`（+ `OptimizerConfig` / `SchedulerConfig` / `DataConfig`），
+  训练运行配置层，与 `GPTConfig` 并列，从 `configs/train-*.yaml` 读
+- `src/my_llm/data/` — `dataset.py`（`GPTDatasetV1` 滑窗数据集）、`dataloader.py`（`create_dataloader_v1`）
+- `src/my_llm/train/` — `losses.py`（`calc_loss_batch` / `calc_loss_loader`）、`metrics.py`
+  （`loss_to_perplexity` / `evaluate_perplexity` / `evaluate_model`）、`scheduler.py`
+  （`warmup_cosine_lr` / `get_cosine_schedule_with_warmup`）、`trainer.py`
+  （`Trainer` + `TrainerConfig` + `save_checkpoint` / `load_checkpoint`，支持 checkpoint 续训、
+  梯度累积、fp16/bf16/fp32）
+- `src/my_llm/generate/` — `sampling.py`（`apply_temperature` / `apply_top_k` / `apply_top_p` /
+  `sample_next_token` / `generate`）、`kv_cache.py`（`KVCache` + `generate_with_cache`，
+  不碰 `model/`，见 Architecture 节）
 
 **存根**（函数体 `raise NotImplementedError`，`src/` 下共 4 个文件）：
 `finetune/sft.py`、`utils/seed.py`、`utils/logging.py`、`utils/viz.py`
@@ -37,13 +47,14 @@ Trainer + 生成层（采样 + KV cache）+ 两个 CLI**」，测试是
 `tests/` 是**四套件**：`conftest.py` + `test_norm.py` / `test_tying.py` / `test_attention.py` /
 `test_tokenizer.py` / `test_data.py` / `test_metrics.py` / `test_scheduler.py` / `test_trainer.py` /
 `test_sampling.py` / **`test_parity_hf.py`** / **`test_crossload.py`** / **`test_kv_cache.py`**。
-快测 61 个用例（`pytest -q` 全绿，~7s），
+快测 61 个用例（`pytest -q` 全绿，实测 **61 passed / 22 deselected，~9s**），
 parity 慢测 16 个用例（实测 **16 passed，~25s**，首次运行会真实下载 `gpt2` 权重），
 crossload 慢测 2 个用例（双路径交叉验证，实测 **2 passed，~40s**，见 Environment 里 TF 权重的坑），
 kv_cache 慢测 4 个用例（实测 **4 passed**，`pytest -m slow` 总计 **22 passed**）。
 `notebooks/` 只有 `.gitkeep`。
-`configs/` 有 5 份 yaml：`gpt2-small.yaml` / `gpt2-tiny.yaml` / `gpt2-medium.yaml`（架构），
-以及 `sft-alpaca.yaml` / `sft-medium-bf16.yaml`（**嵌套**运行配置，见 Commands 里的坑）。
+`configs/` 有 7 份 yaml，三种形态：`gpt2-{small,tiny,medium}.yaml`（扁平架构）、
+`train-{default,demo}.yaml`（扁平运行，对应 `my_llm/train/config.py:TrainConfig`）、
+`sft-alpaca.yaml` / `sft-medium-bf16.yaml`（**嵌套**运行配置，见 Commands 里的坑）。
 `docs/00-现状盘点.md` 是 v1 的完整审计报告（含行号证据、权重映射表、与 HF 的架构差异、取舍建议），
 动手前优先读它，不要凭记忆重写结论。
 
@@ -53,15 +64,16 @@ kv_cache 慢测 4 个用例（实测 **4 passed**，`pytest -m slow` 总计 **22
   （RTX 5060 Laptop，8GB），但 parity 测试强制 CPU + fp32（硬约束 2），不要因为看到 CUDA 可用就改用 GPU。
 - `transformers` 已装（仅 parity 用），pyproject 里锁 `>=5.12,<6`：parity 断言依赖 `GPTConfig()` 默认值与
   `NewGELUActivation` 实现，6.x 一改整套 parity 失效，不要放宽上界。
-- `tensorflow` **未装**——它只是 `weights/openai_tf.py` 的可选依赖，不要把它加回主依赖。
+- `tensorflow` **不在主依赖里**——它只是 `weights/openai_tf.py` 的可选依赖，不要把它加回
+  `pyproject.toml`（本机装了 `tensorflow-cpu` 只是为了跑 crossload，见下方）。
 - 网络：PyPI 走 tuna 镜像可通；**github.com 可能不可达**。因此
-  - `pre-commit` 无法拉取新的 hook 版本（`rev` 改不动，改了会卡死在初始化）；
-  - parity 测试下载 HF 权重依赖镜像源，不要删掉两处设置：`Makefile:3` 的
-    `export HF_ENDPOINT ?= https://hf-mirror.com`（覆盖 `make` 目标），以及
-    `scripts/download_weights.py:24` 的 `os.environ.setdefault(...)`（直接 `python scripts/...` 时的兜底）。
+  parity / crossload 下载 HF 权重依赖镜像源，不要删掉两处设置：`Makefile:3` 的
+  `export HF_ENDPOINT ?= https://hf-mirror.com`（覆盖 `make` 目标），以及
+  `scripts/download_weights.py:24` 的 `os.environ.setdefault(...)`（直接 `python scripts/...` 时的兜底）。
   - 实测：2026-10-04 `gh` CLI（api.github.com）与 `git push`（github.com HTTPS）均可用，
-    首次推送成功。但不保证稳定，失败时按上面的警告处理。
-    `pre-commit` 改 local 模式后不再依赖 GitHub 拉 hook。
+    首次推送成功。但不保证稳定，失败时按上面的策略处理。
+  - `pre-commit` 已全量改成本地模式（见 Conventions），**不再联网拉 hook**，所以 CI/GitHub
+    不可达不影响提交。
 - HF 缓存不在默认位置：本机 `HF_HOME=/data/cache/huggingface`（不是 `~/.cache/huggingface`），
   排查「到底下没下权重」时别找错目录。`gpt2` 权重约 548MB，本机已缓存，
   所以 `pytest -m slow` 现在不用联网就能跑完。
@@ -86,9 +98,9 @@ kv_cache 慢测 4 个用例（实测 **4 passed**，`pytest -m slow` 总计 **22
 make install     # pip install -e ".[dev,viz]" + pre-commit install
 make lint        # ruff check src tests scripts + mypy src（当前全绿）
 make fmt         # ruff format src tests scripts
-make test        # pytest -q，跑 15 个快测（跳过 slow）
-make test-full   # pytest -q -m slow -v，parity + crossload，共 18 个用例，首次会下载 GPT-2 权重
-                 # （实测 18 passed / 15 deselected，约 41s；crossload 首次要下 OpenAI TF 权重，见 Environment）
+make test        # pytest -q，跑 61 个快测（跳过 slow，实测 61 passed / 22 deselected，~9s）
+make test-full   # pytest -q -m slow -v，parity 16 + crossload 2 + kv_cache 4 = 22 个用例
+                 # （实测 22 passed / 61 deselected；首次会下载 GPT-2 权重，见 Environment）
 make check       # lint + test
 make demo        # tiny 配置训练 1 轮（train-demo.yaml）+ 用 last.pt 生成（实测 ~12s，已跑通）
 make clean       # 清缓存
@@ -108,13 +120,19 @@ python scripts/download_weights.py --source openai --model-size 124M
 grep -rl NotImplementedError --include="*.py" src scripts
 ```
 
-> ⚠️ **提交前不要手动格式化**：pre-commit 会跑 ruff / ruff-format / mypy / detect-secrets。
-> hook 改写文件后**重跑一次提交**即可，**第一次提交失败是正常的**，不要 `git commit --no-verify`。
+> ⚠️ **提交前不要手动格式化**：pre-commit 会跑 ruff check --fix / ruff format / mypy（`language: system`，
+> 用的是本机已装的 ruff / mypy）。hook 改写文件后**重跑一次提交**即可，
+> **第一次提交失败是正常的**，不要 `git commit --no-verify`。
+> 注意 hook 里**没有** detect-secrets（本机未安装，见 `.pre-commit-config.yaml:31` 注释），
+> 别凭 CONTRIBUTING.md 里的旧描述以为它还在。
 
 > ℹ️ **`make demo` 已跑通**（`scripts/train.py` + `scripts/generate.py` 都已接通）。
 > 两条 CLI 的形态：
-> - `scripts/train.py --config <架构yaml> [--train-config <运行yaml>] [--epochs/--batch-size/--lr/--seed 覆盖]`
->   训练超参**只能**来自 `configs/train-*.yaml`；四个覆盖 flag 默认 `None`，`None` 时回落 yaml；
+> - `scripts/train.py --config <架构yaml> [--train-config <运行yaml>] [--epochs/--batch-size/--lr/--seed 覆盖] [--resume ckpt]`
+>   训练超参**只能**来自 `configs/train-*.yaml`；`--train-config` 默认 `configs/train-default.yaml`
+>   （`scripts/train.py:42`），`make demo` 用的是 `configs/train-demo.yaml`（1 epoch）；
+>   `--data` 默认 `data/raw/the-verdict.txt`（`:46`）；四个覆盖 flag 默认 `None`（`:48-51`），
+>   `None` 时回落 yaml；`--resume` 接 ` Trainer` 的 checkpoint 续训（`:52`）；
 > - `scripts/generate.py --config <架构yaml> --prompt "..."`；不给 `--checkpoint` 时拉 HF `gpt2` 权重。
 > 语料默认 `data/raw/the-verdict.txt`（`data/raw/` 已被 gitignore，本地自备即可）。
 >
@@ -175,11 +193,16 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
   `--config` 等路径是相对根目录的（如 `configs/gpt2-tiny.yaml`）。
 - `pyproject.toml` 里 `[tool.hatch.build.targets.wheel] packages = ["src/my_llm"]` 是必需的：
   hatchling 按项目名推断的是 `src/my_llm_from_scratch/`，删掉会让 `pip install -e .` 失败。
-- **yaml 有两种形态**，别喂错：`configs/gpt2-*.yaml` 是**扁平**架构配置（顶层键 = `GPTConfig` 字段），
-  可直接 `GPTConfig.from_yaml(...)`；`configs/sft-*.yaml` 是**嵌套**运行配置，顶层是
-  `model` / `data` / `train` / `generation` / `output`，其中 `model.config` 指向一份架构 yaml。
-  把 sft yaml 直接喂给 `from_yaml` 会抛 `KeyError: 缺少必填字段 [...]`（实测如此），
+- **yaml 有三种形态**，别喂错：
+  - `configs/gpt2-*.yaml` —— **扁平架构配置**（顶层键 = `GPTConfig` 字段），可直接 `GPTConfig.from_yaml(...)`；
+  - `configs/train-*.yaml` —— **扁平运行配置**（顶层标量 + `optimizer` / `scheduler` / `data` 三个二级段），
+    对应 `my_llm/train/config.py` 的 `TrainConfig`，一次 `yaml.safe_load` 解析完；当前有
+    `train-default.yaml`（默认，10 epoch）与 `train-demo.yaml`（`make demo` 用，1 epoch）；
+  - `configs/sft-*.yaml` —— **嵌套运行配置**，顶层是 `model` / `data` / `train` / `generation` / `output`，
+    其中 `model.config` 再指向一份架构 yaml 的路径。
+  把 sft yaml 直接喂给 `GPTConfig.from_yaml` 会抛 `KeyError: 缺少必填字段 [...]`（实测如此），
   得先取 `model.config` 指向的路径再构造 `GPTConfig`。
+  反过来，train yaml **不是**给 `GPTConfig` 用的，别把两份搞混——架构与训练超参是分离的两份文件。
 - **导入层级**：只有根包 `src/my_llm/__init__.py` 不重导出（仅 `__version__`，`:25`），
   **子包都重导出了**：`from my_llm.model import GPTModel`、`from my_llm.tokenizer import build_tokenizer`
   均可；需要某个具体类时写深路径 `from my_llm.model.gpt import GPTModel` 也对，两者都行，
@@ -196,7 +219,8 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 
 要在本地复刻 CI：用 `pip install -e ".[dev]"`（**不带** `viz`，CI 不装 seaborn）。
 另有 `Dockerfile`（`python:3.11-slim`，`HF_ENDPOINT` 已写进镜像 ENV，CMD 为 `scripts/generate.py`）——
-由于 `generate/sampling.py`、`train/trainer.py` 等仍是存根，它目前只能用来验证安装 / import / HF 权重加载路径。
+端到端可用：`scripts/generate.py` 已接通（采样 + KV cache），镜像能真正跑生成；
+但 `finetune/` 与 `utils/*` 仍是存根，`scripts/sft.py` 现在会抛 `NotImplementedError`。
 
 ## 文档地图
 
@@ -213,18 +237,19 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 
 ## Architecture
 
-按层划分，越靠下越基础；当前只有 `config` + `model` + `tokenizer` + `weights/` 有真实实现，
-其余包内的模块全是存根：
+按层划分，越靠下越基础。**配置层是并列的两份**（架构 vs 运行），这是理解 CLI 的关键；
+除 `finetune/sft.py` 与 `utils/{seed,logging,viz}.py` 四个存根外，其余都已实现：
 
 | 包 | 职责 | v1 来源 |
 |---|---|---|
-| `config.py` | `GPTConfig`（vocab_size / context_length / emb_dim / n_layers / n_heads / drop_rate / qkv_bias），`qkv_bias` 默认 True；`from_yaml` 只吃扁平 yaml | v1 三处冲突的 `GPT_CONFIG_124M` |
-| `configs/` | `gpt2-{small,tiny,medium}.yaml` 扁平架构配置；`sft-*.yaml` 嵌套运行配置（`model.config` 再指向架构 yaml） | v1 的 `__main__` 字面量 |
+| `config.py` | **架构**配置 `GPTConfig`（vocab_size / context_length / emb_dim / n_layers / n_heads / drop_rate / qkv_bias），`qkv_bias` 默认 True；`from_yaml` 只吃扁平 yaml | v1 三处冲突的 `GPT_CONFIG_124M` |
+| `train/config.py` | **运行**配置 `TrainConfig`（`seed` / `num_epochs` / `batch_size` / `eval_freq` / `save_every` / `grad_accum_steps` / `grad_clip` / `precision` + `OptimizerConfig` / `SchedulerConfig` / `DataConfig` 三个二级 dataclass），从 `configs/train-*.yaml` 读。v1 把这些埋在 `__main__` 里 | v1 `TRAIN:541-546` 的 `OTHER_SETTINGS` |
+| `configs/` | 共 7 份，三种形态：`gpt2-{small,tiny,medium}.yaml`（扁平架构）、`train-{default,demo}.yaml`（扁平运行）、`sft-*.yaml`（嵌套，`model.config` 再指向架构 yaml） | v1 的 `__main__` 字面量 |
 | `model/` | 模型本体。`norm.py` / `attention.py` / `block.py` / `gpt.py` | `language_module.py` |
 | `weights/` | `hf.py` 与 `openai_tf.py` 均已实现：前者是 parity 取数入口，后者是 TF→PT 兼容层（v1 独特资产），两条路径的数值等价性由 `tests/test_crossload.py` 交叉验证 | `module_load_param.py` |
 | `tokenizer/` | `protocol.py`（`Tokenizer` runtime_checkable 协议）+ `tiktoken_impl.py`（`TiktokenTokenizer`、`build_tokenizer()`）（`bpe.py` 留作 P3） | 四处重复的 `tiktoken.get_encoding("gpt2")` |
 | `data/` | 滑窗数据集 / dataloader | `data_preprocess.py` |
-| `train/` | `losses.py` / `metrics.py`(perplexity) / `scheduler.py`(warmup+cosine) / `trainer.py`(续训+累积+AMP) | `module_train.py` |
+| `train/` | `config.py`(TrainConfig) / `losses.py` / `metrics.py`(perplexity) / `scheduler.py`(warmup+cosine) / `trainer.py`(checkpoint 续训 + 梯度累积 + fp16/bf16/fp32) | `module_train.py` |
 | `generate/` | `sampling.py`(greedy/temp/top-k/top-p) / `kv_cache.py` | `module_load_param.py:generate`、`generate_text_simple.py` |
 | `finetune/` | Alpaca SFT | `module_fine_tuning.py` |
 | `utils/` | `seed.py` / `logging.py` / `viz.py` | v1 无对应 |
@@ -244,7 +269,8 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 
 ## 存根填充优先级（P0→P3）
 
-12 个 `src/` 存根（外加 `scripts/sft.py`）按「完成后能做什么」划分，每个优先级是一个可验收的里程碑：
+原本 12 个 `src/` 存根（外加 `scripts/sft.py`）按「完成后能做什么」划分，每个优先级是一个可验收的里程碑。
+P0 / P1 已完成，当前剩余 4 个 `src/` 存根 + `scripts/sft.py`：
 
 | 优先级 | 判据（完成后能做什么） | 模块 | 状态 |
 |---|---|---|---|
@@ -265,20 +291,24 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 ## Conventions and gotchas
 
 - **中文优先**：注释、docstring、日志与参数帮助文字均用中文，标识符用 ASCII。与既有代码保持一致。
-- **配置只能来自 yaml**：超参进 `GPTConfig` 或 `configs/*.yaml`，不要写进 `__main__`（硬约束 4）。
-- **ruff 版本分歧**：本地 ruff 0.16.9，pre-commit 里锁的是 v0.6.9（`.pre-commit-config.yaml:3`），
-  两者对多行 `assert` 的换行风格结论相反，会互相改写文件（已踩过一次，导致提交反复失败）。
-  规避办法：断言消息先赋变量、写成单行；**不要**去改 hook 的 `rev`（GitHub 不可达，改了装不上）。
-- **mypy 同样有版本分歧**：本地 mypy 2.3.1，pre-commit 锁的是 v1.11.2（`.pre-commit-config.yaml:9`）。
-  结论冲突时以 **hook（v1.11.2）为准**，同样不要改 `rev`。
-- **pre-commit 的 mypy 跑在隔离环境**：`additional_dependencies` 必须显式列出 `torch, numpy, types-PyYAML`，
-  否则 `config.py` 的 `import yaml` 会报 `import-untyped`（本地能过是因为本地装了 pyyaml 本体）。
+- **配置只能来自 yaml**：架构超参进 `GPTConfig` + `configs/gpt2-*.yaml`，训练超参进 `TrainConfig` +
+  `configs/train-*.yaml`，不要写进 `__main__`（硬约束 4）。
+- **`pre-commit` 已全量改为 `repo: local` + `language: system`**（`.pre-commit-config.yaml:13`，
+  改于 HEAD `859bda2`）：hook 直接调用本机已装的 ruff 0.16.9 / mypy 2.3.1，不再拉远程 hook 环境。
+  历史背景——原来 ruff 锁 v0.6.9、本地 0.16.9，两者对多行 `assert` 换行风格结论相反，
+  导致「hook 改文件 → 重跑提交 → 本地又改回去」的死循环。现在不存在版本分歧了：
+  **hook 结果与 `make lint` 完全一致**，不必再以 hook 版本为准。
+- 由此带来两点：
+  - 断言消息仍建议先赋变量、写成单行（`model/gpt.py:66` 的写法），保持既有风格；
+  - 换机器若漏装 ruff / mypy，hook 会直接报找不到命令（`pip install -e ".[dev]"` 已含两者）。
+- **detect-secrets 已从 hook 移除**（本机没装它的 CLI/模块，local 模式跑不了），
+  `.pre-commit-config.yaml:31` 留了加回的注释；CONTRIBUTING.md 里写它还在，是旧描述。
 - **产物不要入库**。注意 `.gitignore` **一行只能写一个模式**：写在一行上（如过去的
   `outputs/ runs/`）会被 git 当成一个带空格的模式、完全不生效。2026-10-02 修的就是这处——
   `outputs/` 原先其实没被忽略，OpenAI TF 权重的 475MB 差点混进提交。
   2026-10-02 已把全部同类问题一次拆行修好，并用 `git check-ignore -v` 逐条验证生效
   （目录型模式要拿真实目录测，对不存在的路径 `git check-ignore` 会报 NOT IGNORED，属误报）。
-- 提交前无需手动格式化（ruff / ruff-format / mypy / detect-secrets 都由 hook 跑），
+- 提交前无需手动格式化（ruff check --fix / ruff format / mypy 都由 hook 跑，用的是本机版本），
   细节见 Commands 段的 ⚠️ 提示。
 
 ## 项目硬约束（v2 重构）
