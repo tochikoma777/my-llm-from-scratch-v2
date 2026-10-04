@@ -22,8 +22,9 @@ fmt:
 check: lint test
 
 demo:
-	python scripts/train.py --config configs/gpt2-tiny.yaml
-	python scripts/generate.py --prompt "Every effort moves you"
+	python scripts/train.py --config configs/gpt2-tiny.yaml --train-config configs/train-demo.yaml
+	python scripts/generate.py --config configs/gpt2-tiny.yaml \
+		--checkpoint outputs/checkpoints/last.pt --prompt "Every effort moves you"
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache htmlcov
