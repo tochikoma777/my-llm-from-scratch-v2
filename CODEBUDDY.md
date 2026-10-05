@@ -6,13 +6,12 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 `v2-work/` 是 v2 重写的工作区；`../v1-reference/`（my-LLM-from-scratch，tochikoma777）是**只读参考**（见下方硬约束 3）。
 
-截至 2026-10-05：HEAD 为 `859bda2 chore: use local pre-commit hooks to end ruff version conflict`
-（共 12 次提交），**工作区干净**（之前的生成层 / 两个 CLI / `configs/train-*.yaml` /
-`Makefile` demo 目标已随 `c90dab8`→`b3c7475`→`859bda2` 提交完毕）。
+截至 2026-10-05：HEAD 为 `8b558b9 feat(R4c): SFT 流水线 + seed/logging/viz 工具层`（共 15 次提交），
+**`src/` 存根已归零**（P0→P2 全部落地；`scripts/sft.py` 也已接通，见下方「存根填充优先级」）。
 已落地的是「工程地基 + 模型内核 + 配置层（架构 + 运行两份）+ HF/OpenAI 权重加载 +
-**数据层 + 训练工具层 + Trainer + 生成层（采样 + KV cache）+ 两个 CLI**」，测试是
-快测 / parity / crossload / kv_cache 四套件（实测 `61 passed, 22 deselected`）。
-剩余存根 4 个 `src/` 文件（+ `scripts/sft.py`），填充顺序见下方「存根填充优先级（P0→P3）」。
+数据层 + 训练工具层 + Trainer + 生成层（采样 + KV cache）+ **微调层（Alpaca SFT）+ utils 三件套**
++ 三个 CLI」。测试是快测 / parity / crossload / kv_cache 四套件（实测 `83 passed, 22 deselected`）。
+剩余未做的都是 P3（门面与传播物料）：`notebooks/`、顶层 API 导出、自实现 BPE。
 
 **已实现**（可运行）：
 - `src/my_llm/config.py` — `GPTConfig` dataclass，唯一配置来源；`from_yaml` / `gpt2_small()` / `gpt2_tiny()`
@@ -39,15 +38,27 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 - `src/my_llm/generate/` — `sampling.py`（`apply_temperature` / `apply_top_k` / `apply_top_p` /
   `sample_next_token` / `generate`）、`kv_cache.py`（`KVCache` + `generate_with_cache`，
   不碰 `model/`，见 Architecture 节）
+- `src/my_llm/finetune/sft.py` — Alpaca 指令微调：`InstructionDataset`（构造时一次性分词）、
+  `format_input`（**模板逐字照搬 v1 `SFT:270-277`，训练/推理共用**）、`custom_collate_fn`
+  （变长补齐 + 损失屏蔽：`targets` 里**第一个 pad 保留为预测目标**，其余 padding 置 `ignore_index`）、
+  `run_sft`（AdamW 微调循环，基线评估 + 每轮评估）、`generate_responses`（贪婪解码逐条生成，
+  只解码新 token 再去掉 `### Response:` 前缀）。`__init__.py` 只导出前三个
+- `src/my_llm/utils/` — `seed.py`（`set_seed` 播 `random`/`numpy`/`torch`/`torch.cuda`，
+  `deterministic=True` 才开确定性算法；`get_generator` 不污染全局 RNG；`seed_worker` 作
+  `worker_init_fn`）、`logging.py`（`get_logger` 取 `my_llm.*`；`configure_logging` **只由入口脚本调用**）、
+  `viz.py`（`plot_losses` 双 x 轴 + `plot_attention_heatmap`，**只用 matplotlib 不用 seaborn**——
+  seaborn 仅在 `viz` extra，CI 走 `.[dev]` 没有它）
 
-**存根**（函数体 `raise NotImplementedError`，`src/` 下共 4 个文件）：
-`finetune/sft.py`、`utils/seed.py`、`utils/logging.py`、`utils/viz.py`
-（`scripts/sft.py` 本体也一样会抛，不计入上面 4 个。）
+**存根**：已归零。上一次还有的 4 个 `src/` 文件（`finetune/sft.py`、`utils/{seed,logging,viz}.py`）
+与 `scripts/sft.py` 都在 `8b558b9`（R4c）落地。自查命令仍是
+`grep -rl NotImplementedError --include="*.py" src scripts`（现在应无输出）。
 
 `tests/` 是**四套件**：`conftest.py` + `test_norm.py` / `test_tying.py` / `test_attention.py` /
 `test_tokenizer.py` / `test_data.py` / `test_metrics.py` / `test_scheduler.py` / `test_trainer.py` /
-`test_sampling.py` / **`test_parity_hf.py`** / **`test_crossload.py`** / **`test_kv_cache.py`**。
-快测 61 个用例（`pytest -q` 全绿，实测 **61 passed / 22 deselected，~9s**），
+`test_sampling.py` / `test_sft.py` / `test_seed.py` / `test_viz.py` / **`test_parity_hf.py`** /
+**`test_crossload.py`** / **`test_kv_cache.py`**。
+快测 83 个用例（`pytest -q` 全绿，实测 **83 passed / 22 deselected，~8s**；
+比 R4b 的 61 多了 `test_sft` 11 + `test_seed` 6 + `test_viz` 5），
 parity 慢测 16 个用例（实测 **16 passed，~25s**，首次运行会真实下载 `gpt2` 权重），
 crossload 慢测 2 个用例（双路径交叉验证，实测 **2 passed，~40s**，见 Environment 里 TF 权重的坑），
 kv_cache 慢测 4 个用例（实测 **4 passed**，`pytest -m slow` 总计 **22 passed**）。
@@ -98,16 +109,20 @@ kv_cache 慢测 4 个用例（实测 **4 passed**，`pytest -m slow` 总计 **22
 make install     # pip install -e ".[dev,viz]" + pre-commit install
 make lint        # ruff check src tests scripts + mypy src（当前全绿）
 make fmt         # ruff format src tests scripts
-make test        # pytest -q，跑 61 个快测（跳过 slow，实测 61 passed / 22 deselected，~9s）
+make test        # pytest -q，跑 83 个快测（跳过 slow，实测 83 passed / 22 deselected，~8s）
 make test-full   # pytest -q -m slow -v，parity 16 + crossload 2 + kv_cache 4 = 22 个用例
-                 # （实测 22 passed / 61 deselected；首次会下载 GPT-2 权重，见 Environment）
+                 # （实测 22 passed / 83 deselected；首次会下载 GPT-2 权重，见 Environment）
 make check       # lint + test
 make demo        # tiny 配置训练 1 轮（train-demo.yaml）+ 用 last.pt 生成（实测 ~12s，已跑通）
 make clean       # 清缓存
 
-# 两个端到端 CLI（generate 不给 --checkpoint 时会拉 HF gpt2 权重）
+# 三个端到端 CLI（generate / sft 不给 --checkpoint 时会拉 HF gpt2 权重）
 python scripts/generate.py --config configs/gpt2-small.yaml --prompt "Every effort moves you"
 python scripts/train.py --config configs/gpt2-tiny.yaml --train-config configs/train-demo.yaml
+# SFT：数据必须来自 --json 或 yaml 的 data.local_json（离线策略：不联网下载数据）
+python scripts/sft.py --json data/raw/instruction-sample.json --test-mode
+python scripts/sft.py --json data/raw/instruction-sample.json --checkpoint outputs/model-sft.pth
+python scripts/sft.py --json data/raw/instruction-sample.json --no-pretrained  # 随机初始化，仅冒烟
 
 # 权重下载（唯一会联网的脚本）
 python scripts/download_weights.py --source hf --model gpt2
@@ -116,7 +131,7 @@ python scripts/download_weights.py --source openai --model-size 124M
 #   → 脚本内部已 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")，
 #     所以不必手动加前缀；要换源时自己 export HF_ENDPOINT 覆盖即可
 
-# 自查还剩多少存根（当前 4 个 src/ 文件 + scripts/sft.py）
+# 自查还剩多少存根（R4c 之后应无输出）
 grep -rl NotImplementedError --include="*.py" src scripts
 ```
 
@@ -134,7 +149,15 @@ grep -rl NotImplementedError --include="*.py" src scripts
 >   `--data` 默认 `data/raw/the-verdict.txt`（`:46`）；四个覆盖 flag 默认 `None`（`:48-51`），
 >   `None` 时回落 yaml；`--resume` 接 ` Trainer` 的 checkpoint 续训（`:52`）；
 > - `scripts/generate.py --config <架构yaml> --prompt "..."`；不给 `--checkpoint` 时拉 HF `gpt2` 权重。
-> 语料默认 `data/raw/the-verdict.txt`（`data/raw/` 已被 gitignore，本地自备即可）。
+> 语料默认 `data/raw/the-verdict.txt`（`data/raw/` 已被 gitignore，本地自备即可）；
+> - `scripts/sft.py --sft-config <嵌套运行yaml> [--config <架构yaml>] --json <本地指令数据>`
+>   **`--data` 已改名 `--sft-config`**（原名误导：它指向 yaml，真正的数据走 `--json`）。
+>   架构 yaml 默认 `None` → 回落 `--sft-config` 里的 `model.config`（嵌套形态，
+>   不能直接喂 `GPTConfig.from_yaml`，会 KeyError）；`--epochs/--lr/--seed` 默认 `None`，
+>   回落 `train:` 段（`configs/sft-*.yaml` 里已补 `seed: 123`，否则没有兜底值会违反硬约束 4）。
+>   权重三态：**缺省加载 HF `gpt2`** → `--checkpoint <本地 .pth>` → `--no-pretrained` 才随机初始化。
+>   随机初始化时初始 loss 在**百量级**（124M 约 440），加载预训练后应在**个位数**
+>   （实测 4.6 → 2.6），看到三位数先怀疑权重没加载上。
 >
 > 可运行的端到端路径：模型前向
 > `GPTModel(GPTConfig.gpt2_tiny())(torch.zeros(2, 16, dtype=torch.long))` → `[2, 16, 50257]`，
@@ -220,7 +243,7 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 要在本地复刻 CI：用 `pip install -e ".[dev]"`（**不带** `viz`，CI 不装 seaborn）。
 另有 `Dockerfile`（`python:3.11-slim`，`HF_ENDPOINT` 已写进镜像 ENV，CMD 为 `scripts/generate.py`）——
 端到端可用：`scripts/generate.py` 已接通（采样 + KV cache），镜像能真正跑生成；
-但 `finetune/` 与 `utils/*` 仍是存根，`scripts/sft.py` 现在会抛 `NotImplementedError`。
+`finetune/` 与 `utils/*` 也已实现，`scripts/sft.py` 不再抛 `NotImplementedError`。
 
 ## 文档地图
 
@@ -231,14 +254,18 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 | `docs/00-现状盘点.md` | v1 全量审计，所有 `路径:行号` 证据的唯一出处 |
 | `CHANGELOG.md` | 版本演进记录 |
 
+> ⚠️ **README 已过期，R5 会重写**（`CHANGELOG.md` 一并留到 R5）：它写的"快测 61 + 慢测 22 = 83"
+> 这个等式是错的，实际是**快测 83 + 慢测 22 = 105**；"已知状态"里"仍是存根"的表述也已不成立。
+> 现状以本文件（CODEBUDDY.md）为准。
+
 `CONTRIBUTING.md` 里有本文件未重复收录、但同样必须遵守的几条：`src/` 必须通过
 `mypy --strict`（`tests/` 可无注解）、输出统一落到 `outputs/` 且不用 CWD 相对路径、
 改动 `model/` 必须同步 parity 测试、禁止 `git commit --no-verify`。
 
 ## Architecture
 
-按层划分，越靠下越基础。**配置层是并列的两份**（架构 vs 运行），这是理解 CLI 的关键；
-除 `finetune/sft.py` 与 `utils/{seed,logging,viz}.py` 四个存根外，其余都已实现：
+按层划分，越靠下越基础。**配置层是并列的两份**（架构 vs 运行），这是理解 CLI 的关键。
+`src/` 下已无存根（R4c 完成），P3 只剩门面与传播物料（`notebooks/`、顶层 API 导出、自实现 BPE）：
 
 | 包 | 职责 | v1 来源 |
 |---|---|---|
@@ -251,8 +278,8 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 | `data/` | 滑窗数据集 / dataloader | `data_preprocess.py` |
 | `train/` | `config.py`(TrainConfig) / `losses.py` / `metrics.py`(perplexity) / `scheduler.py`(warmup+cosine) / `trainer.py`(checkpoint 续训 + 梯度累积 + fp16/bf16/fp32) | `module_train.py` |
 | `generate/` | `sampling.py`(greedy/temp/top-k/top-p) / `kv_cache.py` | `module_load_param.py:generate`、`generate_text_simple.py` |
-| `finetune/` | Alpaca SFT | `module_fine_tuning.py` |
-| `utils/` | `seed.py` / `logging.py` / `viz.py` | v1 无对应 |
+| `finetune/` | Alpaca SFT（`sft.py`）。`custom_collate_fn` 的 `ignore_index` 默认 `-100` 与 `train/losses.py` 的 `F.cross_entropy(mean)` 是同一套约定，**两边不能各说一套** | `module_fine_tuning.py` |
+| `utils/` | `seed.py`（可复现）/ `logging.py`（`my_llm.*` 命名空间）/ `viz.py`（**只用 matplotlib，不引 seaborn**：seaborn 仅在 viz extra，CI 装的是 `.[dev]`） | v1 无对应 |
 
 **`generate/kv_cache.py` 刻意不改 `model/`**：KV cache 需要"只算新 token、复用历史 K/V"，
 而 `model/attention.py` 的 `forward(x)` 只吃一个参数、没有 cache 接口。给 `model/` 加
@@ -270,14 +297,14 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 ## 存根填充优先级（P0→P3）
 
 原本 12 个 `src/` 存根（外加 `scripts/sft.py`）按「完成后能做什么」划分，每个优先级是一个可验收的里程碑。
-P0 / P1 已完成，当前剩余 4 个 `src/` 存根 + `scripts/sft.py`：
+**P0 / P1 / P2 已完成（`src/` 存根归零）**，只剩 P3：
 
 | 优先级 | 判据（完成后能做什么） | 模块 | 状态 |
 |---|---|---|---|
 | **P0** | 能训练 + 能生成，demo 最小闭环 | `data/dataset.py`、`data/dataloader.py`、`train/losses.py`、`train/scheduler.py`、`train/metrics.py`、`generate/sampling.py` | ✅ 已完成 |
 | **P1** | CLI 可跑 + 有加速数据 | `train/trainer.py`（checkpoint 续训 / 梯度累积 / 混合精度）、`generate/kv_cache.py`、`scripts/train.py`、`scripts/generate.py` | ✅ 已完成（`make demo` 实测跑通） |
-| **P2** | Alpaca 微调可跑 + 结果可复现 | `finetune/sft.py`、`scripts/sft.py`、`utils/seed.py`、`utils/logging.py` | ⏳ 未开始 |
-| **P3** | 门面与传播物料 | `utils/viz.py`、`notebooks/`、顶层 API 导出（`from my_llm import GPTModel`）、自实现 BPE | ⏳ 未开始 |
+| **P2** | Alpaca 微调可跑 + 结果可复现 | `finetune/sft.py`、`scripts/sft.py`、`utils/seed.py`、`utils/logging.py`、`utils/viz.py` | ✅ 已完成（`8b558b9`，SFT 默认加载 gpt2 预训练权重，实测 loss 4.6 → 2.6） |
+| **P3** | 门面与传播物料 | `notebooks/`、顶层 API 导出（`from my_llm import GPTModel`）、自实现 BPE（`tokenizer/bpe.py`） | ⏳ 未开始 |
 
 注意 `scripts/train.py` / `scripts/generate.py` 在 P1，且它们原本就是**已存在的占位脚本**
 （`optimizer=None` / `idx=None` 两个 TODO 实参），P1 的工作包含把它们接通。
@@ -291,6 +318,13 @@ P0 / P1 已完成，当前剩余 4 个 `src/` 存根 + `scripts/sft.py`：
 ## Conventions and gotchas
 
 - **中文优先**：注释、docstring、日志与参数帮助文字均用中文，标识符用 ASCII。与既有代码保持一致。
+- **动 `finetune/sft.py` 前先读它的模块 docstring**：那里写了三条必须保留的语义——
+  ① `format_input` 的三段式模板（v1 `SFT:270-277`）**逐字保持**，训练与推理共用同一个字符串；
+  ② `custom_collate_fn` 的 `targets` 里**第一个 pad 保留为预测目标**、其余 padding 才置 `ignore_index`
+  （丢了这条模型学不会产出 `<|endoftext|>`，会表现为"生成停不下来"，极易被误判成超参问题）；
+  ③ collate 不带 `device` 参数、张量恒在 CPU（修 v1 `SFT:371-375` vs `:421` 的 device 不一致）。
+  另外 `ignore_index` 默认 `-100` 与 `train/losses.py:41` 的 `F.cross_entropy(mean)` 是绑定的，
+  由 `tests/test_sft.py::test_ignore_index_matches_cross_entropy_semantics` 守着，两边不能各说一套。
 - **配置只能来自 yaml**：架构超参进 `GPTConfig` + `configs/gpt2-*.yaml`，训练超参进 `TrainConfig` +
   `configs/train-*.yaml`，不要写进 `__main__`（硬约束 4）。
 - **`pre-commit` 已全量改为 `repo: local` + `language: system`**（`.pre-commit-config.yaml:13`，

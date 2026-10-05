@@ -2,15 +2,19 @@
 """Alpaca 指令微调入口。
 
 用法：
-    python scripts/sft.py --json data/instruction-sample.json --test-mode
-    python scripts/sft.py --config configs/gpt2-tiny.yaml --sft-config configs/sft-alpaca.yaml
+    python scripts/sft.py --json data/raw/instruction-sample.json --test-mode   # 默认加载 gpt2 权重
+    python scripts/sft.py --json data/raw/instruction-sample.json --checkpoint outputs/model-sft.pth
+    python scripts/sft.py --json data/raw/instruction-sample.json --no-pretrained  # 冒烟
 
 配置分两份，**架构**来自 `--config`（缺省时用 `--sft-config` 里 `model.config` 指向的
 yaml），**数据侧 / 训练侧**超参来自 `--sft-config`。两者分离，避免 v1 那样把架构配置
 就地 `update()` 覆盖（`SFT:446` 的 in-place 修改问题）。
 
-**不联网**：本脚本不会下载指令数据。数据只能来自 `--json` 或 yaml 的 `data.local_json`，
-两者都没有就直接报错退出（而不是偷偷去 GitHub 拉），这样离线环境行为可预期。
+**数据不联网**：指令数据只能来自 `--json` 或 yaml 的 `data.local_json`，两者都没有就直接
+报错退出（而不是偷偷去 GitHub 拉），这样离线环境行为可预期。
+
+**权重默认加载预训练**（指令微调的前提）：缺省走 HF `gpt2`，`--checkpoint` 走本地 .pth
+（HF 权重已缓存时两者都不联网），`--no-pretrained` 才随机初始化（仅冒烟用）。
 
 `--epochs` / `--lr` / `--seed` 是**可选覆盖**：默认 `None`，`None` 时回落
 `--sft-config` 的 `train:` 段（与 `scripts/train.py` 同款：yaml 兜底 + CLI 覆盖）。
@@ -39,6 +43,7 @@ from my_llm.model.gpt import GPTModel
 from my_llm.tokenizer import build_tokenizer
 from my_llm.utils.logging import configure_logging, get_logger
 from my_llm.utils.seed import seed_worker, set_seed
+from my_llm.weights.hf import load_hf_state_dict, load_weights_from_hf
 
 logger = get_logger("scripts.sft")
 
@@ -69,6 +74,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--json", type=Path, default=None, help="本地指令数据 json；覆盖 yaml 的 data.local_json"
     )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="本地权重 .pth / checkpoint；缺省加载 HF gpt2 预训练权重（架构须与 gpt2-small 一致）",
+    )
+    parser.add_argument(
+        "--no-pretrained",
+        action="store_true",
+        help="随机初始化，不加载任何权重（只用于冒烟：初始 loss 会高一个量级）",
+    )
     parser.add_argument("--test-mode", action="store_true", help="每个划分只取 10 条，快速验证")
     parser.add_argument("--epochs", type=int, default=None, help="覆盖 yaml 的 train.num_epochs")
     parser.add_argument("--lr", type=float, default=None, help="覆盖 yaml 的 train.learning_rate")
@@ -95,6 +111,51 @@ def split_data(
     test_data = data[train_portion : train_portion + test_portion]
     val_data = data[train_portion + test_portion :]
     return train_data, test_data, val_data
+
+
+def load_model(cfg: GPTConfig, checkpoint: Path | None, *, pretrained: bool) -> GPTModel:
+    """按配置建模型并装载权重。
+
+    三条路径，**默认走预训练**（指令微调的前提就是在预训练模型上微调，v1 写死
+    `gpt2-medium (355M)` 且必须联网，这里改成"默认加载 + 可离线 + 可选尺寸"）：
+    1. `--no-pretrained`：随机初始化（保留冒烟用）；
+    2. `--checkpoint <path>`：本地权重（HF 已缓存时**不联网**）；
+    3. 缺省：HF `gpt2`，走 `weights/hf.py` 的加载路径。
+
+    三条路径都是**就地 `copy_`**（`load_state_dict` / `load_weights_from_hf` 都不替换
+    `nn.Parameter` 对象），因此 weight tying 不会被打断（硬约束 1）。
+
+    Args:
+        cfg: 架构配置，必须与权重尺寸一致。
+        checkpoint: 本地权重路径；`None` 时走 HF。
+        pretrained: 为 `False` 时跳过一切权重加载。
+
+    Returns:
+        已装载权重（或随机初始化）的模型。
+
+    Raises:
+        FileNotFoundError: `--checkpoint` 路径不存在。
+    """
+    model = GPTModel(cfg)
+    if not pretrained:
+        logger.warning("--no-pretrained：随机初始化，loss 起点会远高于预训练（仅冒烟用）")
+        return model
+    if checkpoint is None:
+        load_weights_from_hf(model, load_hf_state_dict("gpt2"))
+        logger.info("已加载 HF gpt2 预训练权重")
+        return model
+
+    if not checkpoint.is_file():
+        msg = f"权重文件不存在: {checkpoint}"
+        raise FileNotFoundError(msg)
+    # 这里不用 train/trainer.py 的 load_checkpoint：它还要恢复 optimizer / scheduler
+    # 状态（`trainer.py:171`），而本脚本的 optimizer 由 run_sft 内部创建
+    # （`finetune/sft.py` 的 run_sft），恢复出来也会被丢掉；裸 state_dict 更直接，
+    # 且与本脚本保存的 `torch.save(model.state_dict(), ...)` 正好成一对。
+    ckpt: dict[str, Any] = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    model.load_state_dict(ckpt.get("model", ckpt))
+    logger.info("已加载本地权重: %s", checkpoint)
+    return model
 
 
 def main() -> None:
@@ -158,7 +219,7 @@ def main() -> None:
     tokenizer = build_tokenizer()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = GPTModel(cfg).to(device)
+    model = load_model(cfg, args.checkpoint, pretrained=not args.no_pretrained).to(device)
     dtype = _PRECISION_DTYPE.get(str(model_section.get("precision", "fp32")))
     if dtype is not None:
         model.to(dtype=dtype)
