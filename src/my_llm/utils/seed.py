@@ -12,6 +12,9 @@ v1 只有零散的 `torch.manual_seed(123)`（`TRAIN:428`、`SFT:382,488`、`LOA
 
 from __future__ import annotations
 
+import random
+
+import numpy as np
 import torch
 
 
@@ -25,7 +28,21 @@ def set_seed(seed: int, *, deterministic: bool = False) -> None:
     Raises:
         ValueError: `seed` 为负数。
     """
-    raise NotImplementedError
+    if seed < 0:
+        msg = f"seed 必须是非负整数，收到 {seed}"
+        raise ValueError(msg)
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    if deterministic:
+        # 只在这里打开：确定性算法对某些算子没有实现，会在**前向时**抛错，
+        # 因此不能作为默认行为（默认播种就能复现绝大多数实验）。
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 def get_generator(seed: int, *, device: torch.device | str = "cpu") -> torch.Generator:
@@ -38,7 +55,9 @@ def get_generator(seed: int, *, device: torch.device | str = "cpu") -> torch.Gen
     Returns:
         torch.Generator 实例。
     """
-    raise NotImplementedError
+    generator = torch.Generator(device=device)
+    generator.manual_seed(seed)
+    return generator
 
 
 def seed_worker(worker_id: int) -> None:
@@ -53,7 +72,12 @@ def seed_worker(worker_id: int) -> None:
     Raises:
         RuntimeError: 依赖 numpy/torch 但二者不可用时。
     """
-    raise NotImplementedError
+    # torch 已经为每个 worker 派发了不同种子；这里把它同步给另外两个随机源，
+    # 否则 shuffle / 采样在 num_workers > 0 时不可复现。
+    worker_seed = (torch.initial_seed() + worker_id) % 2**32
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
 
 
 __all__ = ["get_generator", "seed_worker", "set_seed"]

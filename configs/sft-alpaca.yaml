@@ -26,6 +26,8 @@ train:
   weight_decay: 0.1
   allowed_max_length: 1024
   num_workers: 0
+  # 随机种子（CLI --seed 可覆盖；留在这里是为了"超参只能来自 yaml"）
+  seed: 123
 
 # 生成回复时的采样设置（temperature=0 -> 贪婪，评测时更可复现）
 generation:

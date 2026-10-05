@@ -21,6 +21,7 @@ train:
   weight_decay: 0.1
   allowed_max_length: 1024
   num_workers: 0
+  seed: 123
 
 generation:
   max_new_tokens: 256

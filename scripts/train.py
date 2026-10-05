@@ -26,6 +26,9 @@ from my_llm.model.gpt import GPTModel
 from my_llm.tokenizer import build_tokenizer
 from my_llm.train import TrainConfig, Trainer, TrainerConfig, get_cosine_schedule_with_warmup
 from my_llm.train.trainer import TrainHistory
+from my_llm.utils.logging import configure_logging, get_logger
+
+logger = get_logger("scripts.train")
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +84,7 @@ def main() -> None:
         FileNotFoundError: 配置文件或语料不存在。
     """
     args = parse_args()
+    configure_logging()
     if not args.data.is_file():
         msg = f"语料不存在: {args.data}"
         raise FileNotFoundError(msg)
@@ -148,10 +152,16 @@ def main() -> None:
     history: TrainHistory = trainer.train(train_loader, val_loader, device, resume_from=args.resume)
 
     if history.train_losses:
-        print(f"train loss {history.train_losses[-1]:.3f} | val loss {history.val_losses[-1]:.3f}")
-        print(f"perplexity {history.perplexities[-1]:.3f} | steps {history.global_steps[-1]}")
+        logger.info(
+            "train loss %.3f | val loss %.3f",
+            history.train_losses[-1],
+            history.val_losses[-1],
+        )
+        logger.info(
+            "perplexity %.3f | steps %d", history.perplexities[-1], history.global_steps[-1]
+        )
     else:
-        print("本轮没有触发评估（增大 num_epochs 或调小 eval_freq）")
+        logger.warning("本轮没有触发评估（增大 num_epochs 或调小 eval_freq）")
 
 
 if __name__ == "__main__":
