@@ -23,6 +23,14 @@ dev = [
     "transformers>=5.12,<6",   # 仅 parity 测试用
 ]
 viz = ["seaborn>=0.13"]
+# notebooks/ 下的教学 notebook 需要真正执行（nbclient + ipykernel），
+# 但 CI 不跑它们（见 CODEBUDDY.md：notebooks 为发版前人工校验），故独立成 extra。
+notebooks = [
+    "jupyter>=1.0",
+    "nbclient>=0.8",
+    "nbformat>=5.9",
+    "ipykernel>=6",
+]
 
 [build-system]
 requires = ["hatchling"]
