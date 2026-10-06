@@ -6,8 +6,10 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 `v2-work/` 是 v2 重写的工作区；`../v1-reference/`（my-LLM-from-scratch，tochikoma777）是**只读参考**（见下方硬约束 3）。
 
-截至 2026-10-05：HEAD 为 `5b3ddc4 feat(R4c): SFT 默认加载预训练权重`（共 22 次提交；
-父提交 `8b558b9` 才是 SFT 流水线本体，本提交只加了权重三态 `--checkpoint` / `--no-pretrained`），
+截至 2026-10-06：HEAD 为 `7cc3d37 docs(R5): rewrite README with parity table, add CHANGELOG`
+（共 24 次提交；最近的两次是 R5：`fd1a135` 三个教学 notebook + `notebooks` extra，
+`7cc3d37` 重写 README/CHANGELOG。更早的 `5b3ddc4`（R4c）只加了权重三态
+`--checkpoint` / `--no-pretrained`，父提交 `8b558b9` 才是 SFT 流水线本体），
 **`src/` 存根已归零**（P0→P2 全部落地；`scripts/sft.py` 也已接通，见下方「存根填充优先级」）。
 已落地的是「工程地基 + 模型内核 + 配置层（架构 + 运行两份）+ HF/OpenAI 权重加载 +
 数据层 + 训练工具层 + Trainer + 生成层（采样 + KV cache）+ **微调层（Alpaca SFT）+ utils 三件套**
@@ -59,7 +61,7 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 `test_tokenizer.py` / `test_data.py` / `test_metrics.py` / `test_scheduler.py` / `test_trainer.py` /
 `test_sampling.py` / `test_sft.py` / `test_seed.py` / `test_viz.py` / **`test_parity_hf.py`** /
 **`test_crossload.py`** / **`test_kv_cache.py`**。
-快测 83 个用例（`pytest -q` 全绿，实测 **83 passed / 22 deselected，~8s**；
+快测 83 个用例（`pytest -q` 全绿，2026-10-06 复测 **83 passed / 22 deselected，~10s**；
 比 R4b 的 61 多了 `test_sft` 11 + `test_seed` 6 + `test_viz` 5），
 parity 慢测 16 个用例（实测 **16 passed，~25s**，首次运行会真实下载 `gpt2` 权重），
 crossload 慢测 2 个用例（双路径交叉验证，实测 **2 passed，~40s**，见 Environment 里 TF 权重的坑），
@@ -76,6 +78,11 @@ kv_cache 慢测 4 个用例（实测 **4 passed**，`pytest -m slow` 总计 **22
 
 - Python 3.11.15 / torch 2.12.0+cu130 / transformers 5.12.0（本机实测）。**本机有 GPU**
   （RTX 5060 Laptop，8GB），但 parity 测试强制 CPU + fp32（硬约束 2），不要因为看到 CUDA 可用就改用 GPU。
+- **显存上限决定了能选哪份 yaml**（实测 fp32 + AdamW，峰值占用见 README「硬件要求」表）：
+  `gpt2-small`（124M）2×1024 约 **5.45 GiB**，8GB 卡没问题；`gpt2-medium`（355M）1×1024 约
+  **9.05 GiB**，已超 8GB 物理显存（WSL 下靠共享内存勉强跑完、明显变慢），
+  所以 `configs/sft-medium-bf16.yaml` 这类 medium 配置在本机要降 batch / context 或走 bf16；
+  large / xl 必然 OOM。调试一律用 `configs/gpt2-tiny.yaml`。
 - `transformers` 已装（仅 parity 用），pyproject 里锁 `>=5.12,<6`：parity 断言依赖 `GPTConfig()` 默认值与
   `NewGELUActivation` 实现，6.x 一改整套 parity 失效，不要放宽上界。
 - `tensorflow` **不在主依赖里**——它只是 `weights/openai_tf.py` 的可选依赖，不要把它加回
@@ -112,9 +119,11 @@ kv_cache 慢测 4 个用例（实测 **4 passed**，`pytest -m slow` 总计 **22
 make install     # pip install -e ".[dev,viz]" + pre-commit install
 make lint        # ruff check src tests scripts + mypy src（当前全绿）
 make fmt         # ruff format src tests scripts
-make test        # pytest -q，跑 83 个快测（跳过 slow，实测 83 passed / 22 deselected，~8s）
+make test        # pytest -q，跑 83 个快测（跳过 slow，实测 83 passed / 22 deselected，~10s）
 make test-full   # pytest -q -m slow -v，parity 16 + crossload 2 + kv_cache 4 = 22 个用例
                  # （实测 22 passed / 83 deselected；首次会下载 GPT-2 权重，见 Environment）
+pytest -m slow -k "not tf_and_hf_agree"   # 跳过要下 475MB OpenAI TF 权重的那 1 个用例，
+                 # 只想验 parity 时用这条（其余 21 个慢测只需已缓存的 HF gpt2 权重）
 make check       # lint + test
 make demo        # tiny 配置训练 1 轮（train-demo.yaml）+ 用 last.pt 生成（实测 ~12s，已跑通）
 make clean       # 清缓存
@@ -156,6 +165,12 @@ grep -rl NotImplementedError --include="*.py" src scripts
 | `outputs/model-sft.pth` | SFT 默认 checkpoint 落点 |
 | `outputs/instruction-data-with-response.json` | `run_sft` 结束后带模型回复的数据 |
 | `outputs/openai-tf/<model-size>/` | OpenAI TF 权重（下载坑见 Environment） |
+
+> ⚠️ **SFT 的 `.pth` 只含裸权重，没有优化器状态**（有意设计）：存的是 `torch.save(model.state_dict(), ...)`
+> （`scripts/sft.py:281`），读回时也只 `load_state_dict`（`:156`，且兼容 `{"model": ...}` 包裹）。
+> 要连 optimizer / scheduler 一起续训，走 `scripts/train.py --resume`（`Trainer.load_checkpoint`）。
+> 别把两种 checkpoint 混用：`train/trainer.py:170-174` 的 `load_checkpoint` 必读
+> `ckpt["model"]` / `ckpt["optimizer"]` / `ckpt["step"]`，拿 SFT 的裸 state_dict 喂它会 `KeyError: 'model'`。
 
 > ⚠️ **提交前不要手动格式化**：pre-commit 会跑 ruff check --fix / ruff format / mypy（`language: system`，
 > 用的是本机已装的 ruff / mypy）。hook 改写文件后**重跑一次提交**即可，

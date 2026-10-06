@@ -98,7 +98,7 @@ python scripts/train.py --config configs/gpt2-tiny.yaml \
   → `--no-pretrained` 才随机初始化（仅冒烟用）。随机初始化时初始 loss 在**百量级**，
   加载预训练后应在**个位数**——看到三位数先怀疑权重没加载上。
 - **SFT 的 `.pth` 只恢复权重，不恢复优化器状态**（有意设计）：存的是裸
-  `model.state_dict()`（`scripts/sft.py:281`），读回时也只 `load_state_dict`（`:156`）。
+  `model.state_dict()`（`scripts/sft.py` 的保存处），读回时也只 `load_state_dict`（`--checkpoint` 加载处）。
   要连优化器一起续训，用 `scripts/train.py --resume`（走 `Trainer.load_checkpoint`，含 optimizer / scheduler）。
 - **权重加载不会打断 weight tying**：加载器只 `copy_` 进现有参数，不替换 `nn.Parameter` 对象，
   `out_head.weight is tok_emb.weight` 始终成立（与 HuggingFace `lm_head` / `wte` 的语义一致）。
