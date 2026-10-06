@@ -6,12 +6,14 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 `v2-work/` 是 v2 重写的工作区；`../v1-reference/`（my-LLM-from-scratch，tochikoma777）是**只读参考**（见下方硬约束 3）。
 
-截至 2026-10-05：HEAD 为 `8b558b9 feat(R4c): SFT 流水线 + seed/logging/viz 工具层`（共 15 次提交），
+截至 2026-10-05：HEAD 为 `5b3ddc4 feat(R4c): SFT 默认加载预训练权重`（共 22 次提交；
+父提交 `8b558b9` 才是 SFT 流水线本体，本提交只加了权重三态 `--checkpoint` / `--no-pretrained`），
 **`src/` 存根已归零**（P0→P2 全部落地；`scripts/sft.py` 也已接通，见下方「存根填充优先级」）。
 已落地的是「工程地基 + 模型内核 + 配置层（架构 + 运行两份）+ HF/OpenAI 权重加载 +
 数据层 + 训练工具层 + Trainer + 生成层（采样 + KV cache）+ **微调层（Alpaca SFT）+ utils 三件套**
-+ 三个 CLI」。测试是快测 / parity / crossload / kv_cache 四套件（实测 `83 passed, 22 deselected`）。
-剩余未做的都是 P3（门面与传播物料）：`notebooks/`、顶层 API 导出、自实现 BPE。
++ 三个 CLI + **三个教学 notebook**」。测试是快测 / parity / crossload / kv_cache 四套件
+（实测 `83 passed, 22 deselected`；`pytest -m slow` 实测 22 passed）。
+剩余未做的只剩 P3 的顶层 API 导出与自实现 BPE（`tokenizer/bpe.py`）。
 
 **已实现**（可运行）：
 - `src/my_llm/config.py` — `GPTConfig` dataclass，唯一配置来源；`from_yaml` / `gpt2_small()` / `gpt2_tiny()`
@@ -62,7 +64,8 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 parity 慢测 16 个用例（实测 **16 passed，~25s**，首次运行会真实下载 `gpt2` 权重），
 crossload 慢测 2 个用例（双路径交叉验证，实测 **2 passed，~40s**，见 Environment 里 TF 权重的坑），
 kv_cache 慢测 4 个用例（实测 **4 passed**，`pytest -m slow` 总计 **22 passed**）。
-`notebooks/` 只有 `.gitkeep`。
+`notebooks/` 有 3 个教学 notebook（`01_tokenizer` / `02_attention` / `03_train_and_generate`），
+由 `pyproject.toml` 的 `notebooks` extra 提供执行依赖，**CI 不跑**（见 Commands 段）。
 `configs/` 有 7 份 yaml，三种形态：`gpt2-{small,tiny,medium}.yaml`（扁平架构）、
 `train-{default,demo}.yaml`（扁平运行，对应 `my_llm/train/config.py:TrainConfig`）、
 `sft-alpaca.yaml` / `sft-medium-bf16.yaml`（**嵌套**运行配置，见 Commands 里的坑）。
@@ -135,6 +138,25 @@ python scripts/download_weights.py --source openai --model-size 124M
 grep -rl NotImplementedError --include="*.py" src scripts
 ```
 
+### 本地数据与产出目录（全新 clone 必读）
+
+`data/raw/` 被 `.gitignore:18` 覆盖，**仓库里没有任何数据文件**（实测 `git ls-files data` 为空）。因此：
+- `make demo` / `scripts/train.py` 会先撞上预检并抛 `FileNotFoundError: 语料不存在`
+  （`scripts/train.py:89-90`，是明确报错不是崩溃）——需要自备 `data/raw/the-verdict.txt`；
+- `scripts/sft.py --json ...` 同理，需要自备 `data/raw/instruction-sample.json`
+  （Alpaca 三字段 `instruction` / `input` / `output`，样例见 `tests/test_sft.py:31-33`）；
+- **快测不依赖任何数据文件**：`tests/` 里没有用例引用 `data/raw`（实测 83 passed），
+  所以"没数据"只影响 CLI 与 `make demo`，不影响 `make test`。
+
+产出统一落 `outputs/`（同样已 gitignore），当前实际布局：
+
+| 路径 | 谁写的 / 谁读 |
+|---|---|
+| `outputs/checkpoints/last.pt` | `make demo` 训练写出，再由 `Makefile:27` 读回做生成 |
+| `outputs/model-sft.pth` | SFT 默认 checkpoint 落点 |
+| `outputs/instruction-data-with-response.json` | `run_sft` 结束后带模型回复的数据 |
+| `outputs/openai-tf/<model-size>/` | OpenAI TF 权重（下载坑见 Environment） |
+
 > ⚠️ **提交前不要手动格式化**：pre-commit 会跑 ruff check --fix / ruff format / mypy（`language: system`，
 > 用的是本机已装的 ruff / mypy）。hook 改写文件后**重跑一次提交**即可，
 > **第一次提交失败是正常的**，不要 `git commit --no-verify`。
@@ -146,10 +168,12 @@ grep -rl NotImplementedError --include="*.py" src scripts
 > - `scripts/train.py --config <架构yaml> [--train-config <运行yaml>] [--epochs/--batch-size/--lr/--seed 覆盖] [--resume ckpt]`
 >   训练超参**只能**来自 `configs/train-*.yaml`；`--train-config` 默认 `configs/train-default.yaml`
 >   （`scripts/train.py:42`），`make demo` 用的是 `configs/train-demo.yaml`（1 epoch）；
->   `--data` 默认 `data/raw/the-verdict.txt`（`:46`）；四个覆盖 flag 默认 `None`（`:48-51`），
->   `None` 时回落 yaml；`--resume` 接 ` Trainer` 的 checkpoint 续训（`:52`）；
+>   `--data` 默认 `data/raw/the-verdict.txt`（`:48`，文件不在仓库里，见上一节）；
+>   四个覆盖 flag 默认 `None`（`:51-54`），`None` 时回落 yaml；`--resume` 接 `Trainer` 的
+>   checkpoint 续训（`:55`）；
 > - `scripts/generate.py --config <架构yaml> --prompt "..."`；不给 `--checkpoint` 时拉 HF `gpt2` 权重。
-> 语料默认 `data/raw/the-verdict.txt`（`data/raw/` 已被 gitignore，本地自备即可）；
+>   其余 flag 全在 `scripts/generate.py:40-48`：`--max-new-tokens`（默认 50）、`--temperature`
+>   （默认 0.0，`<=0` 走贪婪解码）、`--top-k`（默认 None）、`--top-p`（默认 None）、`--seed`（默认 123）；
 > - `scripts/sft.py --sft-config <嵌套运行yaml> [--config <架构yaml>] --json <本地指令数据>`
 >   **`--data` 已改名 `--sft-config`**（原名误导：它指向 yaml，真正的数据走 `--json`）。
 >   架构 yaml 默认 `None` → 回落 `--sft-config` 里的 `model.config`（嵌套形态，
@@ -174,7 +198,17 @@ pytest -m slow -v                                      # 跑 parity；命令行 
 pytest "tests/test_parity_hf.py::test_block_hidden_states[3]" -m slow -v  # 单个 parity 用例（路径要加引号）
 mypy src/my_llm/model/gpt.py                           # 单文件类型检查
 ruff check src/my_llm/model                            # 局部 lint（不影响全局）
+
+# 本地覆盖率（CI 用的是 --cov-report=xml，见 .github/workflows/ci.yml:17）
+pytest --cov=my_llm --cov-report=term-missing
+
+# notebook 依赖（notebooks extra，主依赖不含）：jupyter / nbclient / nbformat / ipykernel
+pip install -e ".[notebooks]"
 ```
+
+> ℹ️ **notebook 是人工校验，CI 不跑**：三个 notebook 都会真实训练/画图，执行慢且
+> 依赖绘图后端，**发版前需人工从零跑一遍**（重启内核顺序执行）确认无报错。
+> 它们刻意不依赖 `data/raw/`——`03` 的语料写在 notebook 里，所以空目录也能跑通。
 
 补充约定：
 - pytest 默认 `addopts = "-m 'not slow'"`，即日常不跑联网测试；**任何会下载真实权重的测试必须标 `@pytest.mark.slow`**。
@@ -252,11 +286,11 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 | `README.md` | 第一屏 parity diff 表（v1 行为 vs HF vs v2 状态，含证据列）、项目结构、已知状态 |
 | `CONTRIBUTING.md` | 6 条硬规则 + 搬运 v1 代码的规矩 + PR 要求 |
 | `docs/00-现状盘点.md` | v1 全量审计，所有 `路径:行号` 证据的唯一出处 |
-| `CHANGELOG.md` | 版本演进记录 |
+| `CHANGELOG.md` | v2.0.0 相对 v1 的 Added / Changed / Fixed / Removed |
+| `notebooks/*.ipynb` | 三个教学 notebook（分词器 / 注意力 / 训练+生成） |
 
-> ⚠️ **README 已过期，R5 会重写**（`CHANGELOG.md` 一并留到 R5）：它写的"快测 61 + 慢测 22 = 83"
-> 这个等式是错的，实际是**快测 83 + 慢测 22 = 105**；"已知状态"里"仍是存根"的表述也已不成立。
-> 现状以本文件（CODEBUDDY.md）为准。
+> ℹ️ **README 与 CHANGELOG 已在 R5 重写（2026-10-06）**，用例数是「快测 83 + 慢测 22 = 105」。
+> 细节（行号证据、硬约束、坑）仍以本文件为准——README 是给使用者看的，本文件是给干活的人看的。
 
 `CONTRIBUTING.md` 里有本文件未重复收录、但同样必须遵守的几条：`src/` 必须通过
 `mypy --strict`（`tests/` 可无注解）、输出统一落到 `outputs/` 且不用 CWD 相对路径、
@@ -265,7 +299,7 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 ## Architecture
 
 按层划分，越靠下越基础。**配置层是并列的两份**（架构 vs 运行），这是理解 CLI 的关键。
-`src/` 下已无存根（R4c 完成），P3 只剩门面与传播物料（`notebooks/`、顶层 API 导出、自实现 BPE）：
+`src/` 下已无存根（R4c 完成），P3 只剩顶层 API 导出与自实现 BPE（`notebooks/` 已在 R5 补齐）：
 
 | 包 | 职责 | v1 来源 |
 |---|---|---|
@@ -294,6 +328,16 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 **任一边改键名映射，都必须同步 `tests/test_crossload.py`**——CONTRIBUTING 硬规则 4 只写了
 「改 `model/` 必须同步 parity」，没覆盖 `weights/`，这条在这里补齐。
 
+**改动 → 同步测试**的完整映射（硬规则 4 只覆盖 `model/`，其余在这里补齐）：
+
+| 动了什么 | 必须同步什么 |
+|---|---|
+| `model/*`（任何影响数值的改动） | `tests/test_parity_hf.py`（CONTRIBUTING 硬规则 4） |
+| `weights/hf.py` / `weights/openai_tf.py` 的键名映射 | `tests/test_crossload.py`（见上一段） |
+| `finetune/sft.py`（尤其 `format_input` 模板、`custom_collate_fn` 的 `ignore_index`） | `tests/test_sft.py`，特别是 `test_ignore_index_matches_cross_entropy_semantics` |
+| `generate/kv_cache.py` | `tests/test_kv_cache.py`：`test_cache_matches_plain_generation` 守「与无 cache 路径逐 token 一致」 |
+| `config.py` / `train/config.py` 加字段 | 同步 `configs/*.yaml` 与对应 `from_yaml`；新字段没有 yaml 兜底值会直接 KeyError（违反硬约束 4） |
+
 ## 存根填充优先级（P0→P3）
 
 原本 12 个 `src/` 存根（外加 `scripts/sft.py`）按「完成后能做什么」划分，每个优先级是一个可验收的里程碑。
@@ -304,7 +348,9 @@ ruff check src/my_llm/model                            # 局部 lint（不影响
 | **P0** | 能训练 + 能生成，demo 最小闭环 | `data/dataset.py`、`data/dataloader.py`、`train/losses.py`、`train/scheduler.py`、`train/metrics.py`、`generate/sampling.py` | ✅ 已完成 |
 | **P1** | CLI 可跑 + 有加速数据 | `train/trainer.py`（checkpoint 续训 / 梯度累积 / 混合精度）、`generate/kv_cache.py`、`scripts/train.py`、`scripts/generate.py` | ✅ 已完成（`make demo` 实测跑通） |
 | **P2** | Alpaca 微调可跑 + 结果可复现 | `finetune/sft.py`、`scripts/sft.py`、`utils/seed.py`、`utils/logging.py`、`utils/viz.py` | ✅ 已完成（`8b558b9`，SFT 默认加载 gpt2 预训练权重，实测 loss 4.6 → 2.6） |
-| **P3** | 门面与传播物料 | `notebooks/`、顶层 API 导出（`from my_llm import GPTModel`）、自实现 BPE（`tokenizer/bpe.py`） | ⏳ 未开始 |
+| **P3** | 门面与传播物料 | 顶层 API 导出（`from my_llm import GPTModel`）、自实现 BPE（`tokenizer/bpe.py`） | ⏳ 未开始 |
+| **P3** | 门面与传播物料 | `notebooks/01_tokenizer` / `02_attention` / `03_train_and_generate`（教学向，已逐个跑通） | ✅ 已完成（R5） |
+| **P3** | 文档与现状同步 | **重写 `README.md` 与 `CHANGELOG.md`** | ✅ 已完成（R5） |
 
 注意 `scripts/train.py` / `scripts/generate.py` 在 P1，且它们原本就是**已存在的占位脚本**
 （`optimizer=None` / `idx=None` 两个 TODO 实参），P1 的工作包含把它们接通。
