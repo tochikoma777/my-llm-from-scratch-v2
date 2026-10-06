@@ -6,9 +6,9 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 `v2-work/` 是 v2 重写的工作区；`../v1-reference/`（my-LLM-from-scratch，tochikoma777）是**只读参考**（见下方硬约束 3）。
 
-截至 2026-10-06：HEAD 为 `7cc3d37 docs(R5): rewrite README with parity table, add CHANGELOG`
-（共 24 次提交；最近的两次是 R5：`fd1a135` 三个教学 notebook + `notebooks` extra，
-`7cc3d37` 重写 README/CHANGELOG。更早的 `5b3ddc4`（R4c）只加了权重三态
+截至 2026-10-06：HEAD 为 `db9a121 docs(R6): README 去掉行号引用，同步 CODEBUDDY.md 仓库现状`
+（共 25 次提交，tag `v2.0.0` 打在同一次提交上；再往前是 R5 的 `fd1a135` 三个教学 notebook +
+`notebooks` extra 与 `7cc3d37` 重写 README/CHANGELOG。更早的 `5b3ddc4`（R4c）只加了权重三态
 `--checkpoint` / `--no-pretrained`，父提交 `8b558b9` 才是 SFT 流水线本体），
 **`src/` 存根已归零**（P0→P2 全部落地；`scripts/sft.py` 也已接通，见下方「存根填充优先级」）。
 已落地的是「工程地基 + 模型内核 + 配置层（架构 + 运行两份）+ HF/OpenAI 权重加载 +
@@ -16,6 +16,16 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 + 三个 CLI + **三个教学 notebook**」。测试是快测 / parity / crossload / kv_cache 四套件
 （实测 `83 passed, 22 deselected`；`pytest -m slow` 实测 22 passed）。
 剩余未做的只剩 P3 的顶层 API 导出与自实现 BPE（`tokenizer/bpe.py`）。
+
+**R6 发布状态（2026-10-06）**：仓库已转 **public**
+（<https://github.com/tochikoma777/my-llm-from-scratch-v2>），
+Release **v2.0.0** 已发布（notes = README 核心 parity 表格 + CHANGELOG 的 2.0.0 全段），
+description 与 topics（gpt2 / llm / from-scratch / pytorch / transformers）已设；
+main 最新一次 CI run 全 success，覆盖 `test` 矩阵 3.10 / 3.11 / 3.12 与 `parity` job。
+v1（`../v1-reference`）README 顶部已加 DEPRECATED 声明并指向 v2（commit `c9a9471`），
+**v1 除这一处 README 外一律不得改动**。
+两条纪律延续：对外文档（README / Release notes）**不写 `文件:行号`**（行号必然失效，
+本项目已有 `scripts/train.py:87` 实际是 `:90` 的前科）；CODEBUDDY.md 仍可写行号，但要随改动同步。
 
 **已实现**（可运行）：
 - `src/my_llm/config.py` — `GPTConfig` dataclass，唯一配置来源；`from_yaml` / `gpt2_small()` / `gpt2_tiny()`
